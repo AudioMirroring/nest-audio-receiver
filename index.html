@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+    <script src="https://ajax.googleapis.com/ajax/libs/shaka-player/4.3.5/shaka-player.compiled.js"></script>
+</head>
+<body>
+    <audio id="audio_element" autoplay></audio>
+
+    <script>
+        const audio = document.getElementById('audio_element');
+        const player = new shaka.Player(audio);
+        const context = cast.framework.CastReceiverContext.getInstance();
+        const playerManager = context.getPlayerManager();
+
+        // 1. Shaka Player 저지연(Low Latency) 설정
+        player.configure({
+            streaming: {
+                lowLatencyMode: true,
+                rebufferingGoal: 0.5, 
+                bufferingGoal: 1.5,
+                jumpLargeGaps: true
+            },
+            manifest: {
+                dash: { autoCorrectDrift: true }
+            }
+        });
+
+        // 2. Cast SDK와 Shaka Player 연결
+        playerManager.setMessageInterceptor(
+            cast.framework.messages.MessageType.LOAD,
+            loadRequestData => {
+                const url = loadRequestData.media.contentId;
+                player.load(url).catch(error => {
+                    console.error('Shaka Load Error', error);
+                });
+                // Cast SDK의 기본 재생 로직은 무시하도록 설정
+                return null; 
+            }
+        );
+
+        context.start();
+    </script>
+</body>
+</html>
