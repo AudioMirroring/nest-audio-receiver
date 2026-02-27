@@ -17,12 +17,12 @@
         player.configure({
             streaming: {
                 lowLatencyMode: true,
-                rebufferingGoal: 0.2, 
-                bufferingGoal: 0.5,
+                rebufferingGoal: 0.1, 
+                bufferingGoal: 0.4,
                 jumpLargeGaps: true
 				liveSync: {
 					enabled: true,
-					targetLatency: 0.2
+					targetLatency: 0.5
 				}
             },
             manifest: {
