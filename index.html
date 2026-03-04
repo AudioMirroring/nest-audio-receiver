@@ -1,49 +1,224 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
-    <script src="https://ajax.googleapis.com/ajax/libs/shaka-player/4.3.5/shaka-player.compiled.js"></script>
+  <meta charset="utf-8" />
+  <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+  <script src="https://ajax.googleapis.com/ajax/libs/shaka-player/4.3.5/shaka-player.compiled.js"></script>
 </head>
+
 <body>
-    <audio id="audio_element" autoplay></audio>
+  <audio id="audio_element" autoplay></audio>
 
-    <script>
-        const audio = document.getElementById('audio_element');
-        const player = new shaka.Player(audio);
-        const context = cast.framework.CastReceiverContext.getInstance();
-        const playerManager = context.getPlayerManager();
+  <script>
+    // =========================
+    // Helpers
+    // =========================
+    const nowMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
-        // 1. Shaka Player 저지연(Low Latency) 설정
-        player.configure({
-            streaming: {
-                lowLatencyMode: true,
-                rebufferingGoal: 1.0, 
-                bufferingGoal: 1.2,
-                jumpLargeGaps: true,
-				liveSync: {
-					enabled: true,
-					targetLatency: 1.0
-				}
-            },
-            manifest: {
-                dash: { autoCorrectDrift: true }
-            }
+    function safeJson(obj) {
+      try { return JSON.stringify(obj); } catch (e) { return String(obj); }
+    }
+
+    function getBufferedEnd(mediaEl) {
+      try {
+        if (!mediaEl || !mediaEl.buffered || mediaEl.buffered.length === 0) return null;
+        return mediaEl.buffered.end(mediaEl.buffered.length - 1);
+      } catch (_) { return null; }
+    }
+
+    function log(...args) {
+      // Nest Mini Remote Debugger/Console에서 확인 가능
+      console.log('[RX]', ...args);
+      // (옵션) 폰으로 로그 전송하고 싶으면 아래 sendLogToPhone() 호출도 같이 쓰세요.
+    }
+
+    // =========================
+    // (Optional) send logs to phone
+    // =========================
+    // 1) 폰 서버에 /log 같은 엔드포인트를 만든 뒤
+    // 2) 아래 URL을 폰 IP/포트로 맞추고 enabled = true로 바꾸면
+    //    Nest Mini에서 찍힌 로그를 폰으로 전송할 수 있어요.
+    const LOG_POST = {
+      enabled: false,
+      url: 'http://192.168.50.72:8080/log', // TODO: phone ip:port/log 로 변경
+    };
+
+    async function sendLogToPhone(payload) {
+      if (!LOG_POST.enabled) return;
+      try {
+        await fetch(LOG_POST.url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          // keepalive는 일부 환경에서만 동작
+        });
+      } catch (e) {
+        // 네트워크 실패는 무시(로그 루프가 멈추지 않게)
+      }
+    }
+
+    function logAndSend(tag, payload) {
+      log(tag, payload);
+      sendLogToPhone({ t: Date.now(), tag, payload });
+    }
+
+    // =========================
+    // Global error hooks
+    // =========================
+    window.onerror = function (msg, src, line, col, err) {
+      logAndSend('window.onerror', { msg, src, line, col, err: String(err) });
+    };
+    window.onunhandledrejection = function (e) {
+      logAndSend('unhandledrejection', { reason: String(e.reason) });
+    };
+
+    // =========================
+    // Shaka init
+    // =========================
+    const audio = document.getElementById('audio_element');
+
+    // Shaka internal logging level
+    if (shaka && shaka.log) {
+      shaka.log.setLevel(shaka.log.Level.DEBUG);
+    }
+
+    const player = new shaka.Player(audio);
+
+    // Log player events
+    player.addEventListener('error', (e) => {
+      const detail = e && e.detail ? e.detail : {};
+      logAndSend('player.error', {
+        code: detail.code,
+        severity: detail.severity,
+        category: detail.category,
+        data: detail.data,
+        message: detail.message,
+        stack: detail.stack,
+      });
+    });
+
+    player.addEventListener('buffering', (e) => {
+      logAndSend('player.buffering', { buffering: e.buffering });
+    });
+
+    player.addEventListener('loading', () => logAndSend('player.loading', {}));
+    player.addEventListener('unloading', () => logAndSend('player.unloading', {}));
+    player.addEventListener('trackschanged', () => logAndSend('player.trackschanged', {}));
+    player.addEventListener('adaptation', () => logAndSend('player.adaptation', {}));
+    player.addEventListener('variantchanged', () => logAndSend('player.variantchanged', {}));
+    player.addEventListener('timeline', () => logAndSend('player.timeline', {}));
+
+    // =========================
+    // Configure (your fixed-latency target)
+    // =========================
+    player.configure({
+      streaming: {
+        lowLatencyMode: true,
+
+        // ✅ "1초 쌓이면 시작/복귀"
+        rebufferingGoal: 1.0,
+
+        // ✅ 유지 버퍼
+        bufferingGoal: 1.2,
+
+        jumpLargeGaps: true,
+
+        liveSync: {
+          enabled: true,
+          targetLatency: 1.0
+        }
+      },
+      manifest: {
+        dash: { autoCorrectDrift: true }
+      }
+    });
+
+    // Confirm configuration is applied
+    try {
+      const cfg = player.getConfiguration();
+      logAndSend('player.getConfiguration.streaming', cfg ? cfg.streaming : null);
+    } catch (e) {
+      logAndSend('player.getConfiguration.failed', { err: String(e) });
+    }
+
+    // =========================
+    // Cast receiver (CAF)
+    // =========================
+    const context = cast.framework.CastReceiverContext.getInstance();
+    const playerManager = context.getPlayerManager();
+
+    // LOAD interceptor
+    playerManager.setMessageInterceptor(
+      cast.framework.messages.MessageType.LOAD,
+      (loadRequestData) => {
+        const url = loadRequestData?.media?.contentId;
+        const start = nowMs();
+
+        logAndSend('LOAD.intercept', {
+          url,
+          contentType: loadRequestData?.media?.contentType,
+          streamType: loadRequestData?.media?.streamType,
         });
 
-        // 2. Cast SDK와 Shaka Player 연결
-        playerManager.setMessageInterceptor(
-            cast.framework.messages.MessageType.LOAD,
-            loadRequestData => {
-                const url = loadRequestData.media.contentId;
-                player.load(url).catch(error => {
-                    console.error('Shaka Load Error', error);
-                });
-                // Cast SDK의 기본 재생 로직은 무시하도록 설정
-                return null; 
-            }
-        );
+        if (!url) {
+          logAndSend('LOAD.no_url', { loadRequestData });
+          return null;
+        }
 
-        context.start();
-    </script>
+        // 실제 Shaka load 수행
+        player.load(url).then(() => {
+          const end = nowMs();
+          logAndSend('player.load.ok', {
+            url,
+            elapsedMs: Math.round(end - start),
+          });
+        }).catch((error) => {
+          logAndSend('player.load.fail', {
+            url,
+            error: safeJson(error),
+            elapsedMs: Math.round(nowMs() - start),
+          });
+        });
+
+        // CAF 기본 재생 로직 비활성화
+        return null;
+      }
+    );
+
+    // =========================
+    // Periodic stats
+    // =========================
+    setInterval(() => {
+      try {
+        const s = player.getStats();
+        const ct = audio.currentTime;
+        const be = getBufferedEnd(audio);
+        const bufAhead = (be != null && ct != null) ? (be - ct) : null;
+
+        logAndSend('STATS', {
+          currentTime: ct,
+          bufferedEnd: be,
+          bufferAheadSec: bufAhead,
+          readyState: audio.readyState,
+
+          // shaka stats
+          playTime: s.playTime,
+          bufferingTime: s.bufferingTime,
+
+          // 버전에 따라 없을 수 있음
+          liveLatency: s.liveLatency,
+
+          // 네트워크/대역폭 참고(있을 때만)
+          estimatedBandwidth: s.estimatedBandwidth,
+        });
+      } catch (e) {
+        logAndSend('STATS.failed', { err: String(e) });
+      }
+    }, 1000);
+
+    // Start receiver
+    context.start();
+    logAndSend('context.start', {});
+  </script>
 </body>
 </html>
