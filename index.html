@@ -111,27 +111,38 @@
     // =========================
     // Configure (your fixed-latency target)
     // =========================
-    player.configure({
-      streaming: {
-        lowLatencyMode: true,
+	player.configure({
+	  streaming: {
+		lowLatencyMode: true,
+		jumpLargeGaps: true,
 
-        // ✅ "1초 쌓이면 시작/복귀"
-        rebufferingGoal: 1.0,
+		// 딜레이를 이 값 근처로 끌어당김
+		liveSync: {
+		  enabled: true,
+		  targetLatency: 0.5,              // 0.5~1.0 사이에서 보통 시작
+		  targetLatencyTolerance: 0.5,
+		  maxPlaybackRate: 1.1,
+		  minPlaybackRate: 0.95,
+		},
 
-        // ✅ 유지 버퍼
-        bufferingGoal: 1.2,
+		// "내가 얼마를 버퍼로 쌓고 시작할지"에 큰 영향
+		bufferingGoal: 1.0,                // 0.8~1.5 범위에서 튜닝
+		rebufferingGoal: 0.5               // 0.3~1.0 범위에서 튜닝
+	  },
 
-        jumpLargeGaps: true,
+	  manifest: {
+		dash: {
+		  autoCorrectDrift: true,
+		  enableFastSwitching: true,
 
-        liveSync: {
-          enabled: true,
-          targetLatency: 1.0
-        }
-      },
-      manifest: {
-        dash: { autoCorrectDrift: true }
-      }
-    });
+		  // MPD에 큰 SPD가 있으면, 이걸 무시해야 targetLatency가 먹습니다.
+		  ignoreSuggestedPresentationDelay: true,
+
+		  // minBufferTime이 크면 저지연이 무력화되기도 해서 실험 가치 큼
+		  ignoreMinBufferTime: true
+		}
+	  }
+	});
 
     // Confirm configuration is applied
     try {
@@ -189,33 +200,49 @@
     // Periodic stats
     // =========================
     setInterval(() => {
-      try {
-        const s = player.getStats();
-        const ct = audio.currentTime;
-        const be = getBufferedEnd(audio);
-        const bufAhead = (be != null && ct != null) ? (be - ct) : null;
+	  try {
+		const s = player.getStats();
 
-        logAndSend('STATS', {
-          currentTime: ct,
-          bufferedEnd: be,
-          bufferAheadSec: bufAhead,
-          readyState: audio.readyState,
+		const ct = audio.currentTime;
+		const be = getBufferedEnd(audio);
 
-          // shaka stats
-          playTime: s.playTime,
-          bufferingTime: s.bufferingTime,
+		const bufAhead = (be != null && ct != null) ? (be - ct) : null;
 
-          // 버전에 따라 없을 수 있음
-          liveLatency: s.liveLatency,
+		// ===== live latency 계산 =====
+		let liveLatency = null;
 
-          // 네트워크/대역폭 참고(있을 때만)
-          estimatedBandwidth: s.estimatedBandwidth,
-        });
-      } catch (e) {
-        logAndSend('STATS.failed', { err: String(e) });
-      }
-    }, 1000);
+		try {
+		  if (audio.seekable && audio.seekable.length > 0) {
+			const liveEdge = audio.seekable.end(audio.seekable.length - 1);
+			liveLatency = liveEdge - audio.currentTime;
+		  }
+		} catch (e) {}
 
+		logAndSend('STATS', {
+
+		  currentTime: ct,
+		  bufferedEnd: be,
+		  bufferAheadSec: bufAhead,
+		  readyState: audio.readyState,
+
+		  // 우리가 직접 계산한 live latency
+		  liveLatencyCalculated: liveLatency,
+
+		  // shaka stats
+		  playTime: s.playTime,
+		  bufferingTime: s.bufferingTime,
+
+		  // shaka 내부 latency (있을 수도 있음)
+		  liveLatencyShaka: s.liveLatency,
+
+		  estimatedBandwidth: s.estimatedBandwidth
+		});
+
+	  } catch (e) {
+		logAndSend('STATS.failed', { err: String(e) });
+	  }
+
+	}, 1000);
     // Start receiver
     context.start();
     logAndSend('context.start', {});
