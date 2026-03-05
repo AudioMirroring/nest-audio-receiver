@@ -32,7 +32,14 @@
     (async () => {
       const audio = document.getElementById('audio_element');
 
-      shaka.log.setLevel(shaka.log.Level.DEBUG);
+	  if (window.shaka && shaka.log && shaka.log.setLevel && shaka.log.Level) {
+	    shaka.log.setLevel(shaka.log.Level.DEBUG);
+		console.log('[RX] shaka.log DEBUG enabled');
+	  } else {
+	    console.log('[RX] shaka.log not available (ok)');
+	  }
+	  
+	  console.log('[RX] shaka exists?', !!window.shaka, 'version:', window.shaka?.Player?.version);
 
       // v5 대비: attach 방식
       const player = new shaka.Player();
