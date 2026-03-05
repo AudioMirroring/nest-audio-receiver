@@ -26,7 +26,8 @@
 
     function getBufferedEnd(mediaEl) {
       try {
-        if (!mediaEl || !mediaEl.buffered || mediaEl.buffered.length === 0) return null;
+        if (!mediaEl ||
+            !mediaEl.buffered || mediaEl.buffered.length === 0) return null;
         return mediaEl.buffered.end(mediaEl.buffered.length - 1);
       } catch (_) { return null; }
     }
@@ -45,9 +46,19 @@
         log('shaka.log not available (ok)');
       }
 
-      // v5 대비: attach 방식
-      const player = new shaka.Player();
-      await player.attach(audio);
+      // ===== Player 생성(값/로직 최소 변경 + attach 호환) =====
+      let player = null;
+      try {
+        player = new shaka.Player();
+        if (player.attach) {
+          await player.attach(audio);
+        } else {
+          throw new Error('player.attach is not available');
+        }
+      } catch (e) {
+        logAndSend('player.attach.fallback', { err: String(e) });
+        player = new shaka.Player(audio);
+      }
 
       // Events
       player.addEventListener('error', (e) => {
@@ -113,7 +124,15 @@
         logAndSend('getConfiguration.failed', { err: String(e) });
       }
 
-      // Autoplay 정책 회피: 클릭으로 play
+      // ===== 자동 재생 시도 (기존 버튼 방식 유지 + 자동시도만 추가) =====
+      try {
+        await audio.play();
+        logAndSend('audio.play.ok(auto)', {});
+      } catch (e) {
+        logAndSend('audio.play.fail(auto)', { err: String(e) });
+      }
+
+      // Autoplay 정책 회피: 클릭으로 play (유지)
       document.getElementById('btnPlay').addEventListener('click', async () => {
         try {
           await audio.play();
