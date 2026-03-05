@@ -152,6 +152,22 @@
       logAndSend('player.getConfiguration.failed', { err: String(e) });
     }
 
+	// =========================
+	// PC 단독 테스트 모드 (Cast 없이 Shaka만 검증)
+	// =========================
+	const TEST = {
+	  enabled: true, // PC에서만 켜고, Nest Mini 배포 시 false
+	  url: 'http://192.168.0.240/live.mpd' // ← 여기만 본인 MPD로
+	};
+
+	if (TEST.enabled) {
+	  const start = nowMs();
+	  player.load(TEST.url).then(() => {
+		logAndSend('player.load.ok(TEST)', { url: TEST.url, elapsedMs: Math.round(nowMs() - start) });
+	  }).catch((error) => {
+		logAndSend('player.load.fail(TEST)', { url: TEST.url, error: safeJson(error), elapsedMs: Math.round(nowMs() - start) });
+	  });
+	}
     // =========================
     // Cast receiver (CAF)
     // =========================
