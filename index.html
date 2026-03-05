@@ -2,14 +2,27 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
-  <script src="https://ajax.googleapis.com/ajax/libs/shaka-player/4.3.5/shaka-player.compiled.js"></script>
+
+  <!--
+    ✅ Shaka는 1번만 로드합니다.
+    - CAF Receiver에서 쓰는 CAF2 빌드로 통일 (PC 브라우저에서도 동작)
+    - 기존 4.3.5 + CAF가 4.9.2-caf2를 또 로드하며 config key 경고가 뜨던 문제를 제거
+  -->
+  <script src="https://ajax.googleapis.com/ajax/libs/shaka-player/4.9.2-caf2/shaka-player.compiled.js"></script>
 </head>
 
 <body>
   <audio id="audio_element" autoplay></audio>
 
   <script>
+    // =========================
+    // TEST mode (PC에서 Shaka만 검증할 때 true)
+    // =========================
+    const TEST = {
+      enabled: true, // ✅ PC 단독 테스트면 true / Nest Mini(리시버) 배포면 false
+      url: 'http://192.168.0.65:8080/dash/index.mpd',
+    };
+
     // =========================
     // Helpers
     // =========================
@@ -27,20 +40,15 @@
     }
 
     function log(...args) {
-      // Nest Mini Remote Debugger/Console에서 확인 가능
       console.log('[RX]', ...args);
-      // (옵션) 폰으로 로그 전송하고 싶으면 아래 sendLogToPhone() 호출도 같이 쓰세요.
     }
 
     // =========================
-    // (Optional) send logs to phone
+    // (Optional) send logs to phone/server
     // =========================
-    // 1) 폰 서버에 /log 같은 엔드포인트를 만든 뒤
-    // 2) 아래 URL을 폰 IP/포트로 맞추고 enabled = true로 바꾸면
-    //    Nest Mini에서 찍힌 로그를 폰으로 전송할 수 있어요.
     const LOG_POST = {
       enabled: false,
-      url: 'http://192.168.50.72:8080/log', // TODO: phone ip:port/log 로 변경
+      url: 'http://192.168.50.72:8080/log', // TODO: 필요 시 변경
     };
 
     async function sendLogToPhone(payload) {
@@ -50,10 +58,9 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
-          // keepalive는 일부 환경에서만 동작
         });
       } catch (e) {
-        // 네트워크 실패는 무시(로그 루프가 멈추지 않게)
+        // ignore
       }
     }
 
@@ -78,7 +85,7 @@
     const audio = document.getElementById('audio_element');
 
     // Shaka internal logging level
-    if (shaka && shaka.log) {
+    if (window.shaka && shaka.log) {
       shaka.log.setLevel(shaka.log.Level.DEBUG);
     }
 
@@ -109,159 +116,201 @@
     player.addEventListener('timeline', () => logAndSend('player.timeline', {}));
 
     // =========================
-    // Configure (your fixed-latency target)
+    // Configure (Low latency target)
     // =========================
-	player.configure({
-	  streaming: {
-		lowLatencyMode: true,
-		jumpLargeGaps: true,
+    player.configure({
+      streaming: {
+        lowLatencyMode: true,
+        // 일부 버전/빌드에서 jumpLargeGaps가 없을 수 있어 안전하게 제거/비활성화 가능
+        // jumpLargeGaps: true,
 
-		// 딜레이를 이 값 근처로 끌어당김
-		liveSync: {
-		  enabled: true,
-		  targetLatency: 0.5,              // 0.5~1.0 사이에서 보통 시작
-		  targetLatencyTolerance: 0.5,
-		  maxPlaybackRate: 1.1,
-		  minPlaybackRate: 0.95,
-		},
+        liveSync: {
+          enabled: true,
+          targetLatency: 0.5,
+          targetLatencyTolerance: 0.5,
+          maxPlaybackRate: 1.1,
+          minPlaybackRate: 0.95,
+        },
 
-		// "내가 얼마를 버퍼로 쌓고 시작할지"에 큰 영향
-		bufferingGoal: 1.0,                // 0.8~1.5 범위에서 튜닝
-		rebufferingGoal: 0.5               // 0.3~1.0 범위에서 튜닝
-	  },
+        bufferingGoal: 1.0,
+        rebufferingGoal: 0.5,
+      },
 
-	  manifest: {
-		dash: {
-		  autoCorrectDrift: true,
-		  enableFastSwitching: true,
+      manifest: {
+        dash: {
+          autoCorrectDrift: true,
+          // enableFastSwitching은 버전에 따라 이름/지원이 다를 수 있어 주의
+          // enableFastSwitching: true,
 
-		  // MPD에 큰 SPD가 있으면, 이걸 무시해야 targetLatency가 먹습니다.
-		  ignoreSuggestedPresentationDelay: true,
-
-		  // minBufferTime이 크면 저지연이 무력화되기도 해서 실험 가치 큼
-		  ignoreMinBufferTime: true
-		}
-	  }
-	});
+          ignoreSuggestedPresentationDelay: true,
+          ignoreMinBufferTime: true,
+        }
+      }
+    });
 
     // Confirm configuration is applied
     try {
       const cfg = player.getConfiguration();
       logAndSend('player.getConfiguration.streaming', cfg ? cfg.streaming : null);
+      logAndSend('player.getConfiguration.manifest.dash', cfg ? (cfg.manifest ? cfg.manifest.dash : null) : null);
     } catch (e) {
       logAndSend('player.getConfiguration.failed', { err: String(e) });
     }
 
-	// =========================
-	// PC 단독 테스트 모드 (Cast 없이 Shaka만 검증)
-	// =========================
-	const TEST = {
-	  enabled: true, // PC에서만 켜고, Nest Mini 배포 시 false
-	  url: 'http://192.168.0.65:8080/dash/index.mpd' // ← 여기만 본인 MPD로
-	};
-
-	if (TEST.enabled) {
-	  const start = nowMs();
-	  player.load(TEST.url).then(() => {
-		logAndSend('player.load.ok(TEST)', { url: TEST.url, elapsedMs: Math.round(nowMs() - start) });
-	  }).catch((error) => {
-		logAndSend('player.load.fail(TEST)', { url: TEST.url, error: safeJson(error), elapsedMs: Math.round(nowMs() - start) });
-	  });
-	}
     // =========================
-    // Cast receiver (CAF)
+    // TEST: PC 단독 재생 (Cast 없이 Shaka만 검증)
     // =========================
-    const context = cast.framework.CastReceiverContext.getInstance();
-    const playerManager = context.getPlayerManager();
+    async function runTestLoad(url) {
+      const start = nowMs();
 
-    // LOAD interceptor
-    playerManager.setMessageInterceptor(
-      cast.framework.messages.MessageType.LOAD,
-      (loadRequestData) => {
-        const url = loadRequestData?.media?.contentId;
-        const start = nowMs();
+      logAndSend('TEST.begin', { url });
 
-        logAndSend('LOAD.intercept', {
-          url,
-          contentType: loadRequestData?.media?.contentType,
-          streamType: loadRequestData?.media?.streamType,
-        });
+      try {
+        await player.load(url);
+        logAndSend('player.load.ok(TEST)', { url, elapsedMs: Math.round(nowMs() - start) });
 
-        if (!url) {
-          logAndSend('LOAD.no_url', { loadRequestData });
-          return null;
+        // autoplay 정책 때문에 play가 실패할 수 있어 결과를 로깅
+        try {
+          await audio.play();
+          logAndSend('audio.play.ok', {});
+        } catch (e) {
+          logAndSend('audio.play.fail', { err: String(e) });
         }
-
-        // 실제 Shaka load 수행
-        player.load(url).then(() => {
-          const end = nowMs();
-          logAndSend('player.load.ok', {
-            url,
-            elapsedMs: Math.round(end - start),
-          });
-        }).catch((error) => {
-          logAndSend('player.load.fail', {
-            url,
-            error: safeJson(error),
-            elapsedMs: Math.round(nowMs() - start),
-          });
+      } catch (error) {
+        logAndSend('player.load.fail(TEST)', {
+          url,
+          error: safeJson(error),
+          elapsedMs: Math.round(nowMs() - start),
         });
-
-        // CAF 기본 재생 로직 비활성화
-        return null;
       }
-    );
+    }
 
     // =========================
-    // Periodic stats
+    // Periodic stats (1s)
     // =========================
     setInterval(() => {
-	  try {
-		const s = player.getStats();
+      try {
+        const s = player.getStats();
+        const ct = audio.currentTime;
+        const be = getBufferedEnd(audio);
+        const bufAhead = (be != null && ct != null) ? (be - ct) : null;
 
-		const ct = audio.currentTime;
-		const be = getBufferedEnd(audio);
+        // live latency: Shaka 값이 가장 신뢰도 높음
+        const liveLatencyShaka = (s && typeof s.liveLatency === 'number') ? s.liveLatency : null;
 
-		const bufAhead = (be != null && ct != null) ? (be - ct) : null;
+        // seekable 기반 계산은 PC/CAF 환경에서 2^32 근처로 튈 수 있어 이상값 필터
+        let liveLatencyCalculated = null;
+        try {
+          if (audio.seekable && audio.seekable.length > 0) {
+            const liveEdge = audio.seekable.end(audio.seekable.length - 1);
+            const raw = liveEdge - audio.currentTime;
 
-		// ===== live latency 계산 =====
-		let liveLatency = null;
+            // 정상 범위만 통과 (0~60초)
+            if (Number.isFinite(raw) && raw >= 0 && raw < 60) {
+              liveLatencyCalculated = raw;
+            }
+          }
+        } catch (_) {}
 
-		try {
-		  if (audio.seekable && audio.seekable.length > 0) {
-			const liveEdge = audio.seekable.end(audio.seekable.length - 1);
-			liveLatency = liveEdge - audio.currentTime;
-		  }
-		} catch (e) {}
+        logAndSend('STATS', {
+          currentTime: ct,
+          bufferedEnd: be,
+          bufferAheadSec: bufAhead,
+          readyState: audio.readyState,
 
-		logAndSend('STATS', {
+          liveLatencyCalculated,
+          liveLatencyShaka,
 
-		  currentTime: ct,
-		  bufferedEnd: be,
-		  bufferAheadSec: bufAhead,
-		  readyState: audio.readyState,
+          playTime: s.playTime,
+          bufferingTime: s.bufferingTime,
+          estimatedBandwidth: s.estimatedBandwidth,
+        });
+      } catch (e) {
+        logAndSend('STATS.failed', { err: String(e) });
+      }
+    }, 1000);
 
-		  // 우리가 직접 계산한 live latency
-		  liveLatencyCalculated: liveLatency,
+    // =========================
+    // CAF Receiver mode (Nest Mini에서만 사용)
+    // =========================
+    function loadScript(src) {
+      return new Promise((resolve, reject) => {
+        const el = document.createElement('script');
+        el.src = src;
+        el.onload = resolve;
+        el.onerror = reject;
+        document.head.appendChild(el);
+      });
+    }
 
-		  // shaka stats
-		  playTime: s.playTime,
-		  bufferingTime: s.bufferingTime,
+    async function startCastReceiver() {
+      // CAF 로드 (TEST 모드에서는 불필요/잡음만 발생)
+      await loadScript('//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js');
 
-		  // shaka 내부 latency (있을 수도 있음)
-		  liveLatencyShaka: s.liveLatency,
+      const context = cast.framework.CastReceiverContext.getInstance();
+      const playerManager = context.getPlayerManager();
 
-		  estimatedBandwidth: s.estimatedBandwidth
-		});
+      // LOAD interceptor
+      playerManager.setMessageInterceptor(
+        cast.framework.messages.MessageType.LOAD,
+        (loadRequestData) => {
+          const url = loadRequestData?.media?.contentId;
+          const start = nowMs();
 
-	  } catch (e) {
-		logAndSend('STATS.failed', { err: String(e) });
-	  }
+          logAndSend('LOAD.intercept', {
+            url,
+            contentType: loadRequestData?.media?.contentType,
+            streamType: loadRequestData?.media?.streamType,
+          });
 
-	}, 1000);
-    // Start receiver
-    context.start();
-    logAndSend('context.start', {});
+          if (!url) {
+            logAndSend('LOAD.no_url', { loadRequestData });
+            return null;
+          }
+
+          player.load(url).then(() => {
+            logAndSend('player.load.ok', {
+              url,
+              elapsedMs: Math.round(nowMs() - start),
+            });
+
+            // Nest Mini에서도 play 시도(환경에 따라 필요)
+            audio.play().then(() => {
+              logAndSend('audio.play.ok(CAF)', {});
+            }).catch((e) => {
+              logAndSend('audio.play.fail(CAF)', { err: String(e) });
+            });
+
+          }).catch((error) => {
+            logAndSend('player.load.fail', {
+              url,
+              error: safeJson(error),
+              elapsedMs: Math.round(nowMs() - start),
+            });
+          });
+
+          // CAF 기본 재생 로직 비활성화
+          return null;
+        }
+      );
+
+      context.start();
+      logAndSend('context.start', {});
+    }
+
+    // =========================
+    // Entry
+    // =========================
+    (async () => {
+      if (TEST.enabled) {
+        // PC 단독 테스트: Shaka만 검증
+        await runTestLoad(TEST.url);
+        logAndSend('CAF.skip(TEST)', {});
+      } else {
+        // 실기기 Receiver: CAF 시작
+        await startCastReceiver();
+      }
+    })();
   </script>
 </body>
 </html>
