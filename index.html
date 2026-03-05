@@ -86,7 +86,7 @@
           // 2초 근처로 붙이기
           liveSync: {
             enabled: true,
-            targetLatency: 2.0,
+            targetLatency: 4.0,
             targetLatencyTolerance: 0.25,
             maxPlaybackRate: 1.12,
             minPlaybackRate: 0.95,
@@ -95,8 +95,8 @@
           },
 
           // 2초 목표에서는 버퍼도 공격적으로
-          bufferingGoal: 0.7,
-          rebufferingGoal: 0.25,
+          bufferingGoal: 4.0,
+		  rebufferingGoal: 4.0,
         },
 
         manifest: {
