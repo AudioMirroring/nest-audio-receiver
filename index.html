@@ -2,170 +2,150 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <script
-    src="https://ajax.googleapis.com/ajax/libs/shaka-player/4.9.2-caf2/shaka-player.compiled.js"
-    onload="console.log('[RX] shaka script loaded')"
-    onerror="console.error('[RX] shaka script FAILED to load')">
-  </script>
+  <!-- CAF Receiver Framework -->
+  <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+
+  <!-- Shaka CAF2 build -->
+  <script src="https://ajax.googleapis.com/ajax/libs/shaka-player/4.9.2-caf2/shaka-player.compiled.js"></script>
+
+  <style>
+    body { margin: 0; background: #111; color: #eee; font-family: sans-serif; }
+    #overlay { position: fixed; left: 0; top: 0; right: 0; padding: 8px 10px; background: rgba(0,0,0,.6); font-size: 12px; }
+    #audio_element { width: 100%; }
+  </style>
 </head>
 
 <body>
-  <button id="btnPlay">Play</button>
+  <div id="overlay">RX booting...</div>
   <audio id="audio_element" controls></audio>
 
   <script>
-    const TEST = {
-      enabled: true,
-      url: 'http://192.168.0.65:8080/dash/index.mpd',
-    };
+    const overlay = document.getElementById('overlay');
+    const audio = document.getElementById('audio_element');
 
-    function log(...args) { console.log('[RX]', ...args); }
-    function logAndSend(tag, payload) { log(tag, payload); }
-
-    const nowMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
-
-    function getBufferedEnd(mediaEl) {
-      try {
-        if (!mediaEl ||
-            !mediaEl.buffered || mediaEl.buffered.length === 0) return null;
-        return mediaEl.buffered.end(mediaEl.buffered.length - 1);
-      } catch (_) { return null; }
+    function log(...args) {
+      console.log('[RX]', ...args);
+      overlay.textContent = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
     }
 
-    (async () => {
-      const audio = document.getElementById('audio_element');
+    // --- 전역 에러 방어(필수) ---
+    window.addEventListener('error', (e) => console.error('[RX] window.error', e.message, e.error));
+    window.addEventListener('unhandledrejection', (e) => console.error('[RX] unhandledrejection', e.reason));
 
-      // Shaka loaded?
-      log('shaka exists?', !!window.shaka, 'version:', window.shaka?.Player?.version);
+    // --- Shaka 지원 확인 ---
+    if (!window.shaka || !shaka.Player || !shaka.Player.isBrowserSupported()) {
+      log('Shaka not supported / not loaded');
+      throw new Error('Shaka not supported');
+    }
+    if (shaka.polyfill && shaka.polyfill.installAll) shaka.polyfill.installAll();
 
-      // shaka.log may not exist in caf2 build; safe-guard
-      if (window.shaka && shaka.log && shaka.log.setLevel && shaka.log.Level) {
-        shaka.log.setLevel(shaka.log.Level.DEBUG);
-        log('shaka.log DEBUG enabled');
-      } else {
-        log('shaka.log not available (ok)');
-      }
+    // --- Shaka Player 생성/attach ---
+    const player = new shaka.Player();
+    player.attach(audio);
 
-      // ===== Player 생성(값/로직 최소 변경 + attach 호환) =====
-      let player = null;
-      try {
-        player = new shaka.Player();
-        if (player.attach) {
-          await player.attach(audio);
-        } else {
-          throw new Error('player.attach is not available');
-        }
-      } catch (e) {
-        logAndSend('player.attach.fallback', { err: String(e) });
-        player = new shaka.Player(audio);
-      }
+    player.addEventListener('error', (e) => {
+      const d = e?.detail ?? {};
+      console.error('[RX] player.error', d);
+      log('player.error', { code: d.code, cat: d.category, sev: d.severity, data: d.data });
+    });
 
-      // Events
-      player.addEventListener('error', (e) => {
-        const d = e?.detail ?? {};
-        logAndSend('player.error', {
-          code: d.code,
-          severity: d.severity,
-          category: d.category,
-          data: d.data,
-          message: d.message,
-          stack: d.stack,
-        });
-      });
-      player.addEventListener('buffering', (e) => logAndSend('player.buffering', { buffering: e.buffering }));
-      player.addEventListener('loading', () => logAndSend('player.loading', {}));
-      player.addEventListener('trackschanged', () => logAndSend('player.trackschanged', {}));
-      player.addEventListener('adaptation', () => logAndSend('player.adaptation', {}));
+    // ====== 여기서 “딜레이 고정” 정책을 잡는다 (4초) ======
+    const TARGET_LATENCY_SEC = 4.0;
 
-      // ===== 2초 타깃 핵심 설정 =====
-      player.configure({
-        streaming: {
-          lowLatencyMode: true,
-          jumpLargeGaps: true,
+    player.configure({
+      streaming: {
+        lowLatencyMode: true,
+        jumpLargeGaps: true,
 
-          // 2초 근처로 붙이기
-          liveSync: {
-            enabled: true,
-            targetLatency: 4.0,
-            targetLatencyTolerance: 0.25,
-            maxPlaybackRate: 1.12,
-            minPlaybackRate: 0.95,
-            panicMode: true,
-            panicThreshold: 1.0,
-          },
-
-          // 2초 목표에서는 버퍼도 공격적으로
-          bufferingGoal: 4.0,
-		  rebufferingGoal: 4.0,
+        liveSync: {
+          enabled: true,
+          targetLatency: TARGET_LATENCY_SEC,
+          targetLatencyTolerance: 0.25,
+          maxPlaybackRate: 1.10,
+          minPlaybackRate: 0.95,
+          panicMode: true,
+          panicThreshold: 1.0,
         },
 
-        manifest: {
-          dash: {
-            autoCorrectDrift: true,
-            enableFastSwitching: true,
-            ignoreSuggestedPresentationDelay: true,
-            ignoreMinBufferTime: true,
-          }
+        // “시작/유지 버퍼”를 4초로 (일정한 딜레이 목적)
+        bufferingGoal: TARGET_LATENCY_SEC,
+        rebufferingGoal: TARGET_LATENCY_SEC,
+
+        // 네트워크 흔들림 내성(끊김 방지)
+        retryParameters: {
+          timeout: 10000,
+          maxAttempts: 6,
+          baseDelay: 300,
+          backoffFactor: 2,
+          fuzzFactor: 0.5
         }
-      });
+      },
 
-      // Load
-      const start = nowMs();
-      logAndSend('TEST.begin', { url: TEST.url });
-
-      await player.load(TEST.url);
-      logAndSend('player.load.ok(TEST)', { elapsedMs: Math.round(nowMs() - start) });
-
-      // 설정이 실제 적용됐는지 확인 (필수)
-      try {
-        log('[RX] NON-DEFAULT CONFIG', player.getNonDefaultConfiguration());
-        log('[RX] LIVE SYNC', player.getConfiguration().streaming.liveSync);
-      } catch (e) {
-        logAndSend('getConfiguration.failed', { err: String(e) });
+      manifest: {
+        dash: {
+          autoCorrectDrift: true,
+          enableFastSwitching: true,
+          ignoreSuggestedPresentationDelay: true,
+          ignoreMinBufferTime: true,
+        }
       }
+    });
 
-      // ===== 자동 재생 시도 (기존 버튼 방식 유지 + 자동시도만 추가) =====
-      try {
-        await audio.play();
-        logAndSend('audio.play.ok(auto)', {});
-      } catch (e) {
-        logAndSend('audio.play.fail(auto)', { err: String(e) });
+    // --- CAF 초기화 ---
+    const context = cast.framework.CastReceiverContext.getInstance();
+    const playerManager = context.getPlayerManager();
+
+    // LOAD 요청 가로채서 URL 확인 + Shaka로 로드
+    playerManager.setMessageInterceptor(
+      cast.framework.messages.MessageType.LOAD,
+      async (loadRequestData) => {
+        try {
+          const url = loadRequestData?.media?.contentId;
+          log('LOAD', url);
+
+          // Shaka로 로드
+          await player.load(url);
+          log('load.ok', url);
+
+          // autoplay 시도 (막혀도 죽지 않게)
+          try { await audio.play(); }
+          catch (e) { console.warn('[RX] audio.play blocked', e); }
+
+          return loadRequestData; // CAF 계속 진행
+        } catch (e) {
+          console.error('[RX] LOAD failed', e);
+          log('LOAD failed', String(e));
+          throw e; // CAF에 실패 전달(여기서 원인 코드가 남음)
+        }
       }
+    );
 
-      // Autoplay 정책 회피: 클릭으로 play (유지)
-      document.getElementById('btnPlay').addEventListener('click', async () => {
-        try {
-          await audio.play();
-          logAndSend('audio.play.ok(user)', {});
-        } catch (e) {
-          logAndSend('audio.play.fail(user)', { err: String(e) });
-        }
-      });
+    // 상태 변화 로그(끊김 원인 추적)
+    playerManager.addEventListener(cast.framework.events.EventType.ERROR, (e) => {
+      console.error('[RX] CAF ERROR', e);
+      log('CAF.ERROR', e?.detailedErrorCode ?? '');
+    });
 
-      // Stats
-      setInterval(() => {
-        try {
-          const s = player.getStats();
-          const ct = audio.currentTime;
-          const be = getBufferedEnd(audio);
-          const bufAhead = (be != null && ct != null) ? (be - ct) : null;
+    // 1초마다 지표(딜레이 유지 확인)
+    setInterval(() => {
+      try {
+        const s = player.getStats();
+        const ct = audio.currentTime;
+        const be = (audio.buffered && audio.buffered.length) ? audio.buffered.end(audio.buffered.length - 1) : null;
+        const bufAhead = (be != null && ct != null) ? (be - ct) : null;
 
-          logAndSend('STATS', {
-            currentTime: ct,
-            bufferedEnd: be,
-            bufferAheadSec: bufAhead,
-            readyState: audio.readyState,
+        console.log('[RX] STATS', {
+          liveLatency: s.liveLatency,
+          bufferAhead: bufAhead,
+          readyState: audio.readyState,
+        });
+      } catch (e) {
+        console.warn('[RX] stats fail', e);
+      }
+    }, 1000);
 
-            liveLatencyShaka: s.liveLatency,
-            estimatedBandwidth: s.estimatedBandwidth,
-            bufferingTime: s.bufferingTime,
-            playTime: s.playTime,
-          });
-        } catch (e) {
-          logAndSend('STATS.failed', { err: String(e) });
-        }
-      }, 1000);
-    })();
+    context.start();
+    log('Receiver started. waiting LOAD...');
   </script>
 </body>
 </html>
