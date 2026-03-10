@@ -41,7 +41,8 @@
     });
 
     // 서버가 Chunked Transfer를 지원하므로, 타겟을 1.0초로 타이트하게 잡습니다.
-    const TARGET_LATENCY_SEC = 0.5; 
+// 하드웨어 디코더가 안정적으로 시작할 수 있는 최소 타겟 (1.0초)
+    const TARGET_LATENCY_SEC = 1.0; 
 
     player.configure({
       streaming: {
@@ -56,11 +57,11 @@
         liveSync: {
           enabled: true,
           targetLatency: TARGET_LATENCY_SEC,
-          targetLatencyTolerance: 0.1, // 오차 허용 범위를 0.1로 더 타이트하게 
+          targetLatencyTolerance: 0.2, 
           maxPlaybackRate: 1.20,       
           minPlaybackRate: 0.95,
           panicMode: true,
-          panicThreshold: 1.0          
+          panicThreshold: 1.5          
         },
 
         retryParameters: {
