@@ -42,26 +42,27 @@
     });
 
     // ====== 목표 지연 시간 0.5초 (하드웨어 2.5초와 합쳐져 총 3초가 되도록 유도) ======
-    const TARGET_LATENCY_SEC = 0.5;
+// ====== 항상 동일한 위치, 동일한 지연을 위한 고정 설정 ======
+    const FIXED_SOFTWARE_DELAY = 2.0;
 
     player.configure({
       streaming: {
-        lowLatencyMode: true,
-        inaccurateManifestTolerance: 0, 
+        lowLatencyMode: false, // 불완전한 최신 청크 요청을 방지하여 안정적인 시작 유도
         jumpLargeGaps: true,
 
-        bufferingGoal: TARGET_LATENCY_SEC,
-        rebufferingGoal: TARGET_LATENCY_SEC,
-        bufferBehind: 1.0, 
+        // 정확히 2.0초 분량의 청크가 버퍼에 수신되어야만 재생을 시작함 (스피커 상관없이 일관성 확보)
+        bufferingGoal: FIXED_SOFTWARE_DELAY,
+        rebufferingGoal: FIXED_SOFTWARE_DELAY,
+        bufferBehind: 2.0, 
 
         liveSync: {
           enabled: true,
-          targetLatency: TARGET_LATENCY_SEC,
-          targetLatencyTolerance: 0.2, // 타겟에서 0.2초만 어긋나도 즉각 보정 시작
-          maxPlaybackRate: 1.20,       // 어긋난 딜레이를 잡기 위해 최대 1.2배속 허용 (음정이 미세하게 변하지만 딜레이는 잡음)
+          targetLatency: FIXED_SOFTWARE_DELAY,
+          targetLatencyTolerance: 0.2, // 0.2초 이상 틀어지면 즉시 배속을 조절해 2.0초 간격으로 강제 복귀
+          maxPlaybackRate: 1.15,       
           minPlaybackRate: 0.95,
           panicMode: true,
-          panicThreshold: 1.5          // 목표보다 1.5초 이상 딜레이가 튀면 라이브 엣지로 오디오를 강제 스킵
+          panicThreshold: 1.0          
         },
 
         retryParameters: {
@@ -77,8 +78,8 @@
         dash: {
           autoCorrectDrift: true,
           enableFastSwitching: true,
-          ignoreSuggestedPresentationDelay: true,
-          ignoreMinBufferTime: true,
+          ignoreSuggestedPresentationDelay: false, // MPD와 무관하게 아래 설정된 시작점을 강제함
+          defaultPresentationDelay: FIXED_SOFTWARE_DELAY // 중요: 항상 Live Edge 기준 정확히 -2.0초 지점의 청크부터 다운로드 시작
         }
       }
     });
