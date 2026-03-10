@@ -24,40 +24,31 @@
       overlay.textContent = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
     }
 
-    window.addEventListener('error', (e) => console.error('[RX] window.error', e.message, e.error));
-    window.addEventListener('unhandledrejection', (e) => console.error('[RX] unhandledrejection', e.reason));
-
-    if (!window.shaka || !shaka.Player || !shaka.Player.isBrowserSupported()) {
-      throw new Error('Shaka not supported');
-    }
+    if (!window.shaka || !shaka.Player || !shaka.Player.isBrowserSupported()) throw new Error('Shaka not supported');
     if (shaka.polyfill && shaka.polyfill.installAll) shaka.polyfill.installAll();
 
     const player = new shaka.Player();
     player.attach(audio);
 
-    player.addEventListener('error', (e) => {
-      console.error('[RX] player.error', e?.detail);
-      log('player.error', e?.detail?.code);
-    });
-
-    // 서버 MPD 설정과 동일하게 목표를 0.5초로 맞춤 (총 체감 지연 3초 유도)
-    const TARGET_LATENCY_SEC = 0.5; 
+    // ====== 1순위 목표: 일정한 지연(Fixed Latency) 강제 ======
+    const TARGET_LATENCY_SEC = 4.0; // 체감 지연 4초로 고정
+    const BUFFERING_GOAL_SEC = 3.0; // 스피커가 정확히 3초 분량의 데이터를 수신하면 재생 시작
 
     player.configure({
       streaming: {
-        lowLatencyMode: true,
-        inaccurateManifestTolerance: 0, 
+        lowLatencyMode: false, // 불안정한 최신 청크 요청 중단 (안정성 최우선)
         jumpLargeGaps: true,
 
-        bufferingGoal: TARGET_LATENCY_SEC,
-        rebufferingGoal: TARGET_LATENCY_SEC,
-        bufferBehind: 1.0, 
+        // 정확히 3초 분량이 차야만 시작 (요청하신 목표)
+        bufferingGoal: BUFFERING_GOAL_SEC,
+        rebufferingGoal: BUFFERING_GOAL_SEC,
+        bufferBehind: 2.0, 
 
         liveSync: {
           enabled: true,
           targetLatency: TARGET_LATENCY_SEC,
-          targetLatencyTolerance: 0.1, // 오차 범위를 0.1로 좁혀서 강하게 딜레이 방어
-          maxPlaybackRate: 1.20,       
+          targetLatencyTolerance: 0.2, // 4초에서 조금이라도 벗어나면 즉각 복귀
+          maxPlaybackRate: 1.15,       
           minPlaybackRate: 0.95,
           panicMode: true,
           panicThreshold: 1.5          
@@ -76,8 +67,8 @@
         dash: {
           autoCorrectDrift: true,
           enableFastSwitching: true,
-          ignoreSuggestedPresentationDelay: true,
-          ignoreMinBufferTime: true
+          ignoreSuggestedPresentationDelay: false, // MPD를 무시하지 않고
+          defaultPresentationDelay: TARGET_LATENCY_SEC // 무조건 Live Edge 기준 -4.0초 지점부터 시작하도록 강제
         }
       }
     });
@@ -93,12 +84,9 @@
           log('LOAD', url);
           await player.load(url);
           log('load.ok');
-          try { await audio.play(); } catch (e) { console.warn('[RX] play blocked', e); }
+          try { await audio.play(); } catch (e) {}
           return loadRequestData;
-        } catch (e) {
-          log('LOAD failed', String(e));
-          throw e;
-        }
+        } catch (e) { throw e; }
       }
     );
 
@@ -113,7 +101,6 @@
     }, 1000);
 
     context.start();
-    log('Receiver started. waiting LOAD...');
   </script>
 </body>
 </html>
