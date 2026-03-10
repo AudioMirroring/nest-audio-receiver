@@ -2,10 +2,8 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <!-- CAF Receiver Framework -->
   <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
 
-  <!-- Shaka CAF2 build -->
   <script src="https://ajax.googleapis.com/ajax/libs/shaka-player/4.9.2-caf2/shaka-player.compiled.js"></script>
 
   <style>
@@ -28,18 +26,15 @@
       overlay.textContent = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
     }
 
-    // --- 전역 에러 방어(필수) ---
     window.addEventListener('error', (e) => console.error('[RX] window.error', e.message, e.error));
     window.addEventListener('unhandledrejection', (e) => console.error('[RX] unhandledrejection', e.reason));
 
-    // --- Shaka 지원 확인 ---
     if (!window.shaka || !shaka.Player || !shaka.Player.isBrowserSupported()) {
       log('Shaka not supported / not loaded');
       throw new Error('Shaka not supported');
     }
     if (shaka.polyfill && shaka.polyfill.installAll) shaka.polyfill.installAll();
 
-    // --- Shaka Player 생성/attach ---
     const player = new shaka.Player();
     player.attach(audio);
 
@@ -49,29 +44,30 @@
       log('player.error', { code: d.code, cat: d.category, sev: d.severity, data: d.data });
     });
 
-    // ====== 여기서 “딜레이 고정” 정책을 잡는다 (4초) ======
-    const TARGET_LATENCY_SEC = 4.0;
+    // ====== 목표 지연 시간 3초로 완전히 고정 ======
+    const TARGET_LATENCY_SEC = 3.0;
 
     player.configure({
       streaming: {
         lowLatencyMode: true,
+        inaccurateManifestTolerance: 0, // MPD 매니페스트 오차 허용 안함 (엄격한 지연시간 적용)
         jumpLargeGaps: true,
 
         liveSync: {
           enabled: true,
           targetLatency: TARGET_LATENCY_SEC,
-          targetLatencyTolerance: 0.25,
-          maxPlaybackRate: 1.10,
+          targetLatencyTolerance: 0.1, // 기존 0.25에서 0.1로 타이트하게 조여서 3초를 칼같이 맞춤
+          maxPlaybackRate: 1.15,       // 지연 시 재생 속도를 살짝 높여서 3초로 복귀
           minPlaybackRate: 0.95,
           panicMode: true,
-          panicThreshold: 1.0,
+          panicThreshold: 1.5,         // 지연시간이 4.5초를 넘어가면 패닉 모드로 강제 점프
         },
 
-        // “시작/유지 버퍼”를 4초로 (일정한 딜레이 목적)
+        // 핵심: 무조건 3초의 데이터가 수신되어야 재생을 시작함
         bufferingGoal: TARGET_LATENCY_SEC,
         rebufferingGoal: TARGET_LATENCY_SEC,
+        bufferBehind: 2.0, // 불필요한 과거 버퍼 메모리 해제
 
-        // 네트워크 흔들림 내성(끊김 방지)
         retryParameters: {
           timeout: 10000,
           maxAttempts: 6,
@@ -91,11 +87,9 @@
       }
     });
 
-    // --- CAF 초기화 ---
     const context = cast.framework.CastReceiverContext.getInstance();
     const playerManager = context.getPlayerManager();
 
-    // LOAD 요청 가로채서 URL 확인 + Shaka로 로드
     playerManager.setMessageInterceptor(
       cast.framework.messages.MessageType.LOAD,
       async (loadRequestData) => {
@@ -103,30 +97,26 @@
           const url = loadRequestData?.media?.contentId;
           log('LOAD', url);
 
-          // Shaka로 로드
           await player.load(url);
           log('load.ok', url);
 
-          // autoplay 시도 (막혀도 죽지 않게)
           try { await audio.play(); }
           catch (e) { console.warn('[RX] audio.play blocked', e); }
 
-          return loadRequestData; // CAF 계속 진행
+          return loadRequestData;
         } catch (e) {
           console.error('[RX] LOAD failed', e);
           log('LOAD failed', String(e));
-          throw e; // CAF에 실패 전달(여기서 원인 코드가 남음)
+          throw e;
         }
       }
     );
 
-    // 상태 변화 로그(끊김 원인 추적)
     playerManager.addEventListener(cast.framework.events.EventType.ERROR, (e) => {
       console.error('[RX] CAF ERROR', e);
       log('CAF.ERROR', e?.detailedErrorCode ?? '');
     });
 
-    // 1초마다 지표(딜레이 유지 확인)
     setInterval(() => {
       try {
         const s = player.getStats();
