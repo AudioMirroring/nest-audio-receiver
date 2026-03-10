@@ -21,7 +21,7 @@
 
     function log(...args) {
       console.log('[RX]', ...args);
-      // 화면에서 실시간 지연상태를 볼 수 있게 overlay 업데이트
+      // 오버레이에 상태를 실시간으로 찍어 디버깅하기 쉽게 둡니다.
       overlay.textContent = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
     }
 
@@ -41,8 +41,8 @@
       log('player.error', e?.detail?.code);
     });
 
-    // ====== 최종 체감 3초를 위한 내부 타겟 설정 (1.5초) ======
-    const TARGET_LATENCY_SEC = 1.5;
+    // ====== 목표 지연 시간 0.5초 (하드웨어 2.5초와 합쳐져 총 3초가 되도록 유도) ======
+    const TARGET_LATENCY_SEC = 0.5;
 
     player.configure({
       streaming: {
@@ -50,19 +50,18 @@
         inaccurateManifestTolerance: 0, 
         jumpLargeGaps: true,
 
-        // 1.5초 분량이 확보되면 즉시 재생
         bufferingGoal: TARGET_LATENCY_SEC,
         rebufferingGoal: TARGET_LATENCY_SEC,
-        bufferBehind: 2.0, 
+        bufferBehind: 1.0, 
 
         liveSync: {
           enabled: true,
           targetLatency: TARGET_LATENCY_SEC,
-          targetLatencyTolerance: 0.2, 
-          maxPlaybackRate: 1.15,       
+          targetLatencyTolerance: 0.2, // 타겟에서 0.2초만 어긋나도 즉각 보정 시작
+          maxPlaybackRate: 1.20,       // 어긋난 딜레이를 잡기 위해 최대 1.2배속 허용 (음정이 미세하게 변하지만 딜레이는 잡음)
           minPlaybackRate: 0.95,
           panicMode: true,
-          panicThreshold: 1.5         
+          panicThreshold: 1.5          // 목표보다 1.5초 이상 딜레이가 튀면 라이브 엣지로 오디오를 강제 스킵
         },
 
         retryParameters: {
@@ -104,7 +103,6 @@
       }
     );
 
-    // 1초마다 화면 오버레이에 Shaka의 내부 지연율(liveLatency) 표기
     setInterval(() => {
       try {
         const s = player.getStats();
@@ -112,6 +110,7 @@
         const be = (audio.buffered && audio.buffered.length) ? audio.buffered.end(audio.buffered.length - 1) : null;
         const bufAhead = (be != null && ct != null) ? (be - ct) : null;
         
+        // 화면 좌측 상단에서 LiveLat이 0.5 근처로 유지되는지 확인하세요.
         log(`LiveLat: ${s.liveLatency?.toFixed(2)}s | Buf: ${bufAhead?.toFixed(2)}s`);
       } catch (e) {}
     }, 1000);
