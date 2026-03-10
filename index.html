@@ -41,11 +41,11 @@
     });
 
     // 서버가 Chunked Transfer를 지원하므로, 타겟을 1.0초로 타이트하게 잡습니다.
-    const TARGET_LATENCY_SEC = 1.0; 
+    const TARGET_LATENCY_SEC = 0.5; 
 
     player.configure({
       streaming: {
-        lowLatencyMode: true, // LL-DASH 다시 활성화!
+        lowLatencyMode: true,
         inaccurateManifestTolerance: 0, 
         jumpLargeGaps: true,
 
@@ -56,11 +56,11 @@
         liveSync: {
           enabled: true,
           targetLatency: TARGET_LATENCY_SEC,
-          targetLatencyTolerance: 0.2, 
+          targetLatencyTolerance: 0.1, // 오차 허용 범위를 0.1로 더 타이트하게 
           maxPlaybackRate: 1.20,       
           minPlaybackRate: 0.95,
           panicMode: true,
-          panicThreshold: 1.5          
+          panicThreshold: 1.0          
         },
 
         retryParameters: {
