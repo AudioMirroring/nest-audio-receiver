@@ -10,7 +10,6 @@
     #audio_element { width: 100%; }
   </style>
 </head>
-
 <body>
   <div id="overlay">RX booting...</div>
   <audio id="audio_element" controls></audio>
@@ -19,62 +18,119 @@
     const overlay = document.getElementById('overlay');
     const audio = document.getElementById('audio_element');
 
+    const TELEMETRY_NS = 'urn:x-cast:com.example.audiomirroring.telemetry';
+    const CONTROL_NS = 'urn:x-cast:com.example.audiomirroring.control';
+
+    let targetDelayMs = 3000;
+    let targetLatencySec = 4.0;
+    let bufferingGoalSec = 3.0;
+
     function log(...args) {
       console.log('[RX]', ...args);
       overlay.textContent = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
     }
 
-    if (!window.shaka || !shaka.Player || !shaka.Player.isBrowserSupported()) throw new Error('Shaka not supported');
-    if (shaka.polyfill && shaka.polyfill.installAll) shaka.polyfill.installAll();
+    if (!window.shaka || !shaka.Player || !shaka.Player.isBrowserSupported()) {
+      throw new Error('Shaka not supported');
+    }
+    if (shaka.polyfill && shaka.polyfill.installAll) {
+      shaka.polyfill.installAll();
+    }
 
     const player = new shaka.Player();
     player.attach(audio);
 
-    // ====== 1순위 목표: 일정한 지연(Fixed Latency) 강제 ======
-    const TARGET_LATENCY_SEC = 4.0; // 체감 지연 4초로 고정
-    const BUFFERING_GOAL_SEC = 3.0; // 스피커가 정확히 3초 분량의 데이터를 수신하면 재생 시작
+    function applyPlayerConfig() {
+      targetLatencySec = Math.max(targetDelayMs / 1000.0, 3.0);
+      bufferingGoalSec = Math.max(targetLatencySec - 1.0, 2.0);
 
-    player.configure({
-      streaming: {
-        lowLatencyMode: false, // 불안정한 최신 청크 요청 중단 (안정성 최우선)
-        jumpLargeGaps: true,
-
-        // 정확히 3초 분량이 차야만 시작 (요청하신 목표)
-        bufferingGoal: BUFFERING_GOAL_SEC,
-        rebufferingGoal: BUFFERING_GOAL_SEC,
-        bufferBehind: 2.0, 
-
-        liveSync: {
-          enabled: true,
-          targetLatency: TARGET_LATENCY_SEC,
-          targetLatencyTolerance: 0.2, // 4초에서 조금이라도 벗어나면 즉각 복귀
-          maxPlaybackRate: 1.15,       
-          minPlaybackRate: 0.95,
-          panicMode: true,
-          panicThreshold: 1.5          
+      player.configure({
+        streaming: {
+          lowLatencyMode: false,
+          jumpLargeGaps: true,
+          bufferingGoal: bufferingGoalSec,
+          rebufferingGoal: bufferingGoalSec,
+          bufferBehind: 2.0,
+          liveSync: {
+            enabled: true,
+            targetLatency: targetLatencySec,
+            targetLatencyTolerance: 0.2,
+            maxPlaybackRate: 1.15,
+            minPlaybackRate: 0.95,
+            panicMode: true,
+            panicThreshold: 1.5
+          },
+          retryParameters: {
+            timeout: 10000,
+            maxAttempts: 6,
+            baseDelay: 300,
+            backoffFactor: 2,
+            fuzzFactor: 0.5
+          }
         },
-
-        retryParameters: {
-          timeout: 10000,
-          maxAttempts: 6,
-          baseDelay: 300,
-          backoffFactor: 2,
-          fuzzFactor: 0.5
+        manifest: {
+          dash: {
+            autoCorrectDrift: true,
+            enableFastSwitching: true,
+            ignoreSuggestedPresentationDelay: false,
+            defaultPresentationDelay: targetLatencySec
+          }
         }
-      },
+      });
 
-      manifest: {
-        dash: {
-          autoCorrectDrift: true,
-          enableFastSwitching: true,
-          ignoreSuggestedPresentationDelay: false, // MPD를 무시하지 않고
-          defaultPresentationDelay: TARGET_LATENCY_SEC // 무조건 Live Edge 기준 -4.0초 지점부터 시작하도록 강제
-        }
-      }
-    });
+      log(`cfg targetLatency=${targetLatencySec}s bufferingGoal=${bufferingGoalSec}s`);
+    }
+
+    applyPlayerConfig();
 
     const context = cast.framework.CastReceiverContext.getInstance();
     const playerManager = context.getPlayerManager();
+
+    context.addCustomMessageListener(CONTROL_NS, (event) => {
+      try {
+        const msg = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+        if (msg.type === 'setTargetDelay') {
+          targetDelayMs = Number(msg.targetDelayMs || 3000);
+          applyPlayerConfig();
+        }
+      } catch (e) {
+        console.error('[RX] control parse error', e);
+      }
+    });
+
+    function buildTelemetry() {
+      const stats = player.getStats ? player.getStats() : {};
+      const currentTime = Number(audio.currentTime || 0);
+      const bufferedEnd =
+        (audio.buffered && audio.buffered.length)
+          ? Number(audio.buffered.end(audio.buffered.length - 1))
+          : currentTime;
+      const bufferAheadSec = Math.max(0, bufferedEnd - currentTime);
+      const liveLatencySec = Number(
+        stats && typeof stats.liveLatency === 'number'
+          ? stats.liveLatency
+          : targetLatencySec
+      );
+
+      return {
+        playbackPositionSec: currentTime,
+        liveLatencySec,
+        bufferAheadSec,
+        receiverWallClockMs: Date.now(),
+        targetDelayMs
+      };
+    }
+
+    function sendTelemetry() {
+      try {
+        const message = JSON.stringify(buildTelemetry());
+        context.sendCustomMessage(TELEMETRY_NS, undefined, message);
+        const t = JSON.parse(message);
+        log(`LiveLat:${t.liveLatencySec.toFixed(2)}s Buf:${t.bufferAheadSec.toFixed(2)}s Pos:${t.playbackPositionSec.toFixed(2)}s`);
+      } catch (e) {
+        console.error('[RX] telemetry send error', e);
+      }
+    }
 
     playerManager.setMessageInterceptor(
       cast.framework.messages.MessageType.LOAD,
@@ -84,22 +140,16 @@
           log('LOAD', url);
           await player.load(url);
           log('load.ok');
-          try { await audio.play(); } catch (e) {}
+          try { await audio.play(); } catch (e) { console.warn(e); }
           return loadRequestData;
-        } catch (e) { throw e; }
+        } catch (e) {
+          console.error('[RX] load failed', e);
+          throw e;
+        }
       }
     );
 
-    setInterval(() => {
-      try {
-        const s = player.getStats();
-        const ct = audio.currentTime;
-        const be = (audio.buffered && audio.buffered.length) ? audio.buffered.end(audio.buffered.length - 1) : null;
-        const bufAhead = (be != null && ct != null) ? (be - ct) : null;
-        log(`LiveLat: ${s.liveLatency?.toFixed(2)}s | Buf: ${bufAhead?.toFixed(2)}s`);
-      } catch (e) {}
-    }, 1000);
-
+    setInterval(sendTelemetry, 500);
     context.start();
   </script>
 </body>
