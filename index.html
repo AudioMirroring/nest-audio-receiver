@@ -121,17 +121,28 @@
     };
   }
 
-  function sendTelemetry() {
-    try {
-      const message = JSON.stringify(buildTelemetry());
-      context.sendCustomMessage(TELEMETRY_NS, undefined, message);
-      const t = JSON.parse(message);
-      log(`TX LiveLat:${t.liveLatencySec.toFixed(2)}s Buf:${t.bufferAheadSec.toFixed(2)}s Pos:${t.playbackPositionSec.toFixed(2)}s`);
-    } catch (e) {
-      console.error('[RX] telemetry send error', e);
-      log('telemetry.error', String(e));
-    }
-  }
+	function sendTelemetry() {
+	  try {
+
+		const telemetry = buildTelemetry()
+		const message = JSON.stringify(telemetry)
+
+		const senders = context.getSenders()
+
+		senders.forEach(sender => {
+		  context.sendCustomMessage(
+			TELEMETRY_NS,
+			sender.senderId,
+			message
+		  )
+		})
+
+		log(`TX ${telemetry.liveLatencySec.toFixed(2)}s`)
+
+	  } catch (e) {
+		console.error('[RX] telemetry send error', e)
+	  }
+	}
 
   playerManager.setMessageInterceptor(
     cast.framework.messages.MessageType.LOAD,
