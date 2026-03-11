@@ -116,37 +116,33 @@
       playbackPositionSec: currentTime,
       liveLatencySec,
       bufferAheadSec,
-      receiverWallClockMs: Date.now()
+      receiverWallClockMs: Date.now(),
+      targetDelayMs
     };
   }
 
-  function sendTelemetry() {
-    try {
-      const telemetry = buildTelemetry();
-      const message = JSON.stringify(telemetry);
+	function sendTelemetry() {
+	  try {
 
-      const senders = context.getSenders ? context.getSenders() : [];
-      if (senders && senders.length > 0) {
-        senders.forEach(sender => {
-          context.sendCustomMessage(
-            TELEMETRY_NS,
-            sender.senderId,
-            message
-          );
-        });
-      } else {
-        context.sendCustomMessage(TELEMETRY_NS, undefined, message);
-      }
+		const telemetry = buildTelemetry()
+		const message = JSON.stringify(telemetry)
 
-      log(
-        `TX LiveLat:${telemetry.liveLatencySec.toFixed(2)}s ` +
-        `Buf:${telemetry.bufferAheadSec.toFixed(2)}s ` +
-        `Pos:${telemetry.playbackPositionSec.toFixed(2)}s`
-      );
-    } catch (e) {
-      console.error('[RX] telemetry send error', e);
-    }
-  }
+		const senders = context.getSenders()
+
+		senders.forEach(sender => {
+		  context.sendCustomMessage(
+			TELEMETRY_NS,
+			sender.senderId,
+			message
+		  )
+		})
+
+		log(`TX ${telemetry.liveLatencySec.toFixed(2)}s`)
+
+	  } catch (e) {
+		console.error('[RX] telemetry send error', e)
+	  }
+	}
 
   playerManager.setMessageInterceptor(
     cast.framework.messages.MessageType.LOAD,
