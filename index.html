@@ -1,172 +1,28 @@
 <!DOCTYPE html>
+<!--
+  AudioMirroring 커스텀 Cast Web Receiver (CAF + Shaka LL-DASH)
+
+  역할:
+   - 폰이 서빙하는 LL-DASH 매니페스트(/dash/index.mpd)를 저지연 라이브로 재생
+   - Cast 커스텀 채널(urn:x-cast:com.samsung.audiomirroring)로 실측 live latency를 폰에 리포트
+   - 폰은 이 값을 setMusicShareSyncDelay(L)에 투입해 비디오를 오디오에 맞춤
+
+  설계 문서: docs/av-sync-shaka-design.md
+-->
 <html>
 <head>
   <meta charset="utf-8" />
-  <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
-  <script src="https://ajax.googleapis.com/ajax/libs/shaka-player/4.9.2-caf2/shaka-player.compiled.js"></script>
+  <title>AudioMirroring Receiver</title>
+  <!-- CAF Web Receiver SDK (내부적으로 shaka-player 사용) -->
+  <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
   <style>
-    body { margin: 0; background: #111; color: #eee; font-family: sans-serif; }
-    #overlay { position: fixed; left: 0; top: 0; right: 0; padding: 8px 10px; background: rgba(0,0,0,.6); font-size: 12px; }
-    #audio_element { width: 100%; }
+    html, body { width: 100%; height: 100%; margin: 0; background: #000; }
+    cast-media-player { --background-color: #000; }
+    /* 오디오 전용이라 별도 UI는 최소화 */
   </style>
 </head>
 <body>
-  <div id="overlay">RX booting...</div>
-  <audio id="audio_element" controls></audio>
-
-<script>
-  const overlay = document.getElementById('overlay');
-  const audio = document.getElementById('audio_element');
-
-  const TELEMETRY_NS = 'urn:x-cast:com.example.audiomirroring.telemetry';
-  const CONTROL_NS = 'urn:x-cast:com.example.audiomirroring.control';
-
-  let targetDelayMs = 3000;
-  let targetLatencySec = 4.0;
-  let bufferingGoalSec = 3.0;
-
-  function log(...args) {
-    console.log('[RX]', ...args);
-    overlay.textContent = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
-  }
-
-  if (!window.shaka || !shaka.Player || !shaka.Player.isBrowserSupported()) {
-    throw new Error('Shaka not supported');
-  }
-  if (shaka.polyfill && shaka.polyfill.installAll) {
-    shaka.polyfill.installAll();
-  }
-
-  const player = new shaka.Player();
-  player.attach(audio);
-
-  function applyPlayerConfig() {
-    targetLatencySec = Math.max(targetDelayMs / 1000.0, 3.0);
-    bufferingGoalSec = Math.max(targetLatencySec - 1.0, 2.0);
-
-    player.configure({
-      streaming: {
-        lowLatencyMode: false,
-        jumpLargeGaps: true,
-        bufferingGoal: bufferingGoalSec,
-        rebufferingGoal: bufferingGoalSec,
-        bufferBehind: 2.0,
-        liveSync: {
-          enabled: true,
-          targetLatency: targetLatencySec,
-          targetLatencyTolerance: 0.2,
-          maxPlaybackRate: 1.15,
-          minPlaybackRate: 0.95,
-          panicMode: true,
-          panicThreshold: 1.5
-        },
-        retryParameters: {
-          timeout: 10000,
-          maxAttempts: 6,
-          baseDelay: 300,
-          backoffFactor: 2,
-          fuzzFactor: 0.5
-        }
-      },
-      manifest: {
-        dash: {
-          autoCorrectDrift: true,
-          enableFastSwitching: true,
-          ignoreSuggestedPresentationDelay: false,
-          defaultPresentationDelay: targetLatencySec
-        }
-      }
-    });
-
-    log(`cfg targetLatency=${targetLatencySec}s bufferingGoal=${bufferingGoalSec}s`);
-  }
-
-  applyPlayerConfig();
-
-  const context = cast.framework.CastReceiverContext.getInstance();
-  const playerManager = context.getPlayerManager();
-
-  context.addCustomMessageListener(CONTROL_NS, (event) => {
-    try {
-      const msg = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
-      if (msg.type === 'setTargetDelay') {
-        targetDelayMs = Number(msg.targetDelayMs || 3000);
-        applyPlayerConfig();
-      }
-    } catch (e) {
-      console.error('[RX] control parse error', e);
-    }
-  });
-
-  function buildTelemetry() {
-    const stats = player.getStats ? player.getStats() : {};
-    const currentTime = Number(audio.currentTime || 0);
-    const bufferedEnd =
-      (audio.buffered && audio.buffered.length)
-        ? Number(audio.buffered.end(audio.buffered.length - 1))
-        : currentTime;
-    const bufferAheadSec = Math.max(0, bufferedEnd - currentTime);
-    const liveLatencySec = Number(
-      stats && typeof stats.liveLatency === 'number'
-        ? stats.liveLatency
-        : targetLatencySec
-    );
-
-    return {
-      playbackPositionSec: currentTime,
-      liveLatencySec,
-      bufferAheadSec,
-      receiverWallClockMs: Date.now()
-    };
-  }
-
-  function sendTelemetry() {
-    try {
-      const telemetry = buildTelemetry();
-      const message = JSON.stringify(telemetry);
-
-      const senders = context.getSenders ? context.getSenders() : [];
-      if (senders && senders.length > 0) {
-        senders.forEach(sender => {
-          context.sendCustomMessage(
-            TELEMETRY_NS,
-            sender.senderId,
-            message
-          );
-        });
-      } else {
-        context.sendCustomMessage(TELEMETRY_NS, undefined, message);
-      }
-
-      log(
-        `TX LiveLat:${telemetry.liveLatencySec.toFixed(2)}s ` +
-        `Buf:${telemetry.bufferAheadSec.toFixed(2)}s ` +
-        `Pos:${telemetry.playbackPositionSec.toFixed(2)}s`
-      );
-    } catch (e) {
-      console.error('[RX] telemetry send error', e);
-    }
-  }
-
-  playerManager.setMessageInterceptor(
-    cast.framework.messages.MessageType.LOAD,
-    async (loadRequestData) => {
-      try {
-        const url = loadRequestData?.media?.contentId;
-        log('LOAD', url);
-        await player.load(url);
-        log('load.ok');
-        try { await audio.play(); } catch (e) { console.warn(e); }
-        return loadRequestData;
-      } catch (e) {
-        console.error('[RX] load failed', e);
-        throw e;
-      }
-    }
-  );
-
-  setInterval(sendTelemetry, 500);
-  context.start();
-</script>
+  <cast-media-player></cast-media-player>
+  <script src="receiver.js"></script>
 </body>
 </html>
