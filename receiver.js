@@ -38,7 +38,7 @@
   const playbackConfig = new cast.framework.PlaybackConfig();
   // 시작 시 버퍼링을 최소화(라이브 엣지에 가깝게 시작)
   playbackConfig.autoResumeDuration = 1;          // 재버퍼 후 재개에 필요한 버퍼(초)
-  playbackConfig.autoResumeNumberOfSegments = 1;
+  playbackConfig.autoResumeNumberOfSegments = 2;
   playbackConfig.initialBandwidth = 128000;       // 오디오 전용, 낮은 대역폭 힌트
 
   playerManager.setPlaybackConfig(playbackConfig);
