@@ -64,17 +64,21 @@
         loadRequest.media = media;
 
         // manifest URL에서 폰의 호스트(IP:PORT) 추출 → /latency POST 대상
-        if (media.contentId) {
+        // CAF 버전에 따라 contentUrl 또는 contentId에 URL이 담긴다(둘 다 확인).
+        const src = media.contentUrl || media.contentId;
+        if (src) {
           try {
-            const url = new URL(media.contentId);
+            const url = new URL(src);
             senderBaseUrl = url.origin; // http://192.168.x.x:port
             console.log('[AM-Receiver] senderBaseUrl =', senderBaseUrl);
           } catch (e) {
-            console.error('[AM-Receiver] contentId parse error', e);
+            console.error('[AM-Receiver] src parse error', src, e);
           }
+        } else {
+          console.error('[AM-Receiver] no contentUrl/contentId in LOAD');
         }
 
-        console.log('[AM-Receiver] LOAD intercepted:', media.contentId, media.contentType);
+        console.log('[AM-Receiver] LOAD intercepted:', src, media.contentType);
       } catch (e) {
         console.error('[AM-Receiver] LOAD interceptor error', e);
       }
@@ -157,6 +161,9 @@
     const latencyMs = computeLiveLatencyMs();
     const playerState = playerManager.getPlayerState();
 
+    // 아직 baseUrl을 못 구했으면 매 리포트마다 재시도
+    if (!senderBaseUrl) resolveSenderBaseUrl();
+
     if (latencyMs >= 0 && senderBaseUrl) {
       const body = JSON.stringify(Object.assign({
         liveLatencyMs: latencyMs,
@@ -174,8 +181,24 @@
     console.log('[AM-Receiver] latency=' + latencyMs + 'ms state=' + playerState);
   }
 
+  // senderBaseUrl을 아직 못 구했으면 현재 미디어 정보에서 재시도
+  function resolveSenderBaseUrl() {
+    if (senderBaseUrl) return;
+    try {
+      const info = playerManager.getMediaInformation && playerManager.getMediaInformation();
+      const src = info && (info.contentUrl || info.contentId);
+      if (src) {
+        senderBaseUrl = new URL(src).origin;
+        console.log('[AM-Receiver] senderBaseUrl (resolved) =', senderBaseUrl);
+      }
+    } catch (e) {
+      console.error('[AM-Receiver] resolveSenderBaseUrl failed', e);
+    }
+  }
+
   function startReporting() {
     stopReporting();
+    resolveSenderBaseUrl();
     reportTimer = setInterval(sendReport, REPORT_INTERVAL_MS);
     catchupTimer = setInterval(applyLiveCatchup, CATCHUP_INTERVAL_MS);
     sendReport({ reason: 'start' }); // 즉시 1회
