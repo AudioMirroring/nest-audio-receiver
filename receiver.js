@@ -58,6 +58,23 @@
 
   const context = cast.framework.CastReceiverContext.getInstance();
   const playerManager = context.getPlayerManager();
+  let shakaPlayer = null;
+
+  // Get Shaka Player instance from CAF
+  function getShakaPlayer() {
+    if (shakaPlayer) return shakaPlayer;
+    try {
+      const mediaEl = document.querySelector('video') || document.querySelector('audio');
+      if (mediaEl && window.shaka && window.shaka.Player) {
+        shakaPlayer = shaka.Player.probeSupport();
+        // Try to get attached player
+        if (mediaEl && mediaEl.__shaka_player__) {
+          shakaPlayer = mediaEl.__shaka_player__;
+        }
+      }
+    } catch (e) {}
+    return shakaPlayer;
+  }
 
   // ---------------------------------------------------------------------------
   // 1) 저지연 재생 설정
@@ -96,16 +113,43 @@
 
   function getLiveState() {
     const el = getMediaEl();
+    if (!el) {
+      return { latencyMs: -1, video: null, liveEdge: NaN };
+    }
+
+    // Try Shaka Player API first (CAF uses Shadow DOM)
+    try {
+      if (window.shaka && window.shaka.Player && el.__shaka_player__) {
+        const player = el.__shaka_player__;
+        const stats = player.getStats();
+
+        // For live streams: liveEdge = current time + buffered duration
+        if (stats && stats.bufferedAhead !== undefined) {
+          // bufferedAhead = how much ahead we are buffered (latency)
+          const latencyMs = Math.round(stats.bufferedAhead * 1000);
+          console.log('[AM-Receiver] Shaka latency =', latencyMs + 'ms (bufferedAhead=' + stats.bufferedAhead + 's)');
+          if (latencyMs >= 0) {
+            return { latencyMs: latencyMs, video: el, liveEdge: NaN };
+          }
+        }
+      }
+    } catch (e) {
+      console.log('[AM-Receiver] Shaka API error:', e.message);
+    }
+
+    // Fallback: try standard seekable API
     if (el && el.seekable && el.seekable.length > 0) {
       try {
         const liveEdge = el.seekable.end(el.seekable.length - 1);
         const cur = el.currentTime;
         const latencySec = liveEdge - cur;
         if (isFinite(latencySec) && latencySec >= 0) {
+          console.log('[AM-Receiver] DOM latency =', Math.round(latencySec * 1000) + 'ms');
           return { latencyMs: Math.round(latencySec * 1000), video: el, liveEdge: liveEdge };
         }
       } catch (e) {}
     }
+
     return { latencyMs: -1, video: el, liveEdge: NaN };
   }
 
