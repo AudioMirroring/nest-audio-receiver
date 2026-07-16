@@ -165,17 +165,11 @@
     if (!senderBaseUrl) resolveSenderBaseUrl();
 
     if (latencyMs >= 0 && senderBaseUrl) {
-      const body = JSON.stringify(Object.assign({
-        liveLatencyMs: latencyMs,
-        playerState: playerState,
-        targetLatencyMs: TARGET_LATENCY_MS,
-      }, extra || {}));
-
-      fetch(senderBaseUrl + '/latency', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: body,
-      }).catch((e) => console.error('[AM-Receiver] latency POST failed', e));
+      // GET 쿼리로 전송: 단순 요청이라 CORS preflight/mixed-content 이슈 없음
+      // (DASH 세그먼트가 GET http로 잘 받아지므로 동일하게 확실히 동작)
+      const url = senderBaseUrl + '/latency?ms=' + latencyMs +
+        '&state=' + encodeURIComponent(playerState || '');
+      fetch(url).catch((e) => console.error('[AM-Receiver] latency GET failed', e));
     }
 
     console.log('[AM-Receiver] latency=' + latencyMs + 'ms state=' + playerState);
