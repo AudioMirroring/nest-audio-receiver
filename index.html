@@ -4,10 +4,8 @@
 
   역할:
    - 폰이 서빙하는 LL-DASH 매니페스트(/dash/index.mpd)를 저지연 라이브로 재생
-   - Cast 커스텀 채널(urn:x-cast:com.samsung.audiomirroring)로 실측 live latency를 폰에 리포트
+   - 측정한 live latency를 폰의 HTTP 엔드포인트(/latency)로 POST 리포트
    - 폰은 이 값을 setMusicShareSyncDelay(L)에 투입해 비디오를 오디오에 맞춤
-
-  설계 문서: docs/av-sync-shaka-design.md
 -->
 <html>
 <head>
@@ -18,7 +16,6 @@
   <style>
     html, body { width: 100%; height: 100%; margin: 0; background: #000; }
     cast-media-player { --background-color: #000; }
-    /* 오디오 전용이라 별도 UI는 최소화 */
   </style>
 </head>
 <body>
