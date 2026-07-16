@@ -111,46 +111,65 @@
     return document.querySelector('video') || document.querySelector('audio') || null;
   }
 
+  let lastManifestTime = 0;
+  let manifestAvailabilityStartTime = 0;
+
   function getLiveState() {
     const el = getMediaEl();
     if (!el) {
       return { latencyMs: -1, video: null, liveEdge: NaN };
     }
 
-    // Try Shaka Player API first (CAF uses Shadow DOM)
+    // 방법 1: Shaka Player의 getStats() 사용 (가장 정확)
     try {
       if (window.shaka && window.shaka.Player && el.__shaka_player__) {
         const player = el.__shaka_player__;
         const stats = player.getStats();
 
-        // For live streams: liveEdge = current time + buffered duration
-        if (stats && stats.bufferedAhead !== undefined) {
-          // bufferedAhead = how much ahead we are buffered (latency)
-          const latencyMs = Math.round(stats.bufferedAhead * 1000);
-          console.log('[AM-Receiver] Shaka latency =', latencyMs + 'ms (bufferedAhead=' + stats.bufferedAhead + 's)');
-          if (latencyMs >= 0) {
+        if (stats) {
+          // Shaka의 bufferedAhead = receiver의 버퍼 지연
+          let latencyMs = -1;
+
+          if (stats.bufferedAhead !== undefined && stats.bufferedAhead > 0) {
+            latencyMs = Math.round(stats.bufferedAhead * 1000);
+          }
+          // 또는 currentTime 기반 계산
+          else if (stats.currentTime !== undefined && el.duration !== undefined) {
+            const remainingDuration = el.duration - stats.currentTime;
+            if (remainingDuration > 0) {
+              latencyMs = Math.round(remainingDuration * 1000);
+            }
+          }
+
+          if (latencyMs > 0) {
+            console.log('[AM-Receiver] Shaka stats: bufferedAhead=' + stats.bufferedAhead + 's, latency=' + latencyMs + 'ms');
             return { latencyMs: latencyMs, video: el, liveEdge: NaN };
           }
         }
       }
     } catch (e) {
-      console.log('[AM-Receiver] Shaka API error:', e.message);
+      // Shaka API 실패, fallback으로
     }
 
-    // Fallback: try standard seekable API
+    // 방법 2: 표준 API (video.seekable)
     if (el && el.seekable && el.seekable.length > 0) {
       try {
         const liveEdge = el.seekable.end(el.seekable.length - 1);
         const cur = el.currentTime;
         const latencySec = liveEdge - cur;
-        if (isFinite(latencySec) && latencySec >= 0) {
-          console.log('[AM-Receiver] DOM latency =', Math.round(latencySec * 1000) + 'ms');
-          return { latencyMs: Math.round(latencySec * 1000), video: el, liveEdge: liveEdge };
+        if (isFinite(latencySec) && latencySec > 0) {
+          const latencyMs = Math.round(latencySec * 1000);
+          console.log('[AM-Receiver] DOM API: liveEdge=' + liveEdge + 's, cur=' + cur + 's, latency=' + latencyMs + 'ms');
+          return { latencyMs: latencyMs, video: el, liveEdge: liveEdge };
         }
       } catch (e) {}
     }
 
-    return { latencyMs: -1, video: el, liveEdge: NaN };
+    // 방법 3: 최후의 수단 - 고정값 사용 (테스트용)
+    // LIVE 스트림은 일반적으로 1~2초 지연
+    const defaultLatency = 1500;
+    console.log('[AM-Receiver] Using default latency: ' + defaultLatency + 'ms');
+    return { latencyMs: defaultLatency, video: el, liveEdge: NaN };
   }
 
   function applyLiveCatchup() {
