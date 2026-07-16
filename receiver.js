@@ -18,15 +18,28 @@
   const NAMESPACE = 'urn:x-cast:com.samsung.audiomirroring';
 
   // 목표 라이브 latency(ms). 실기기에서 튜닝.
-  const TARGET_LATENCY_MS = 800;
+  const TARGET_LATENCY_MS = 1500;
 
   // latency 리포트 주기(ms)
   const REPORT_INTERVAL_MS = 1000;
+
+  // ---- 라이브 catch-up 파라미터 ----
+  // 이보다 뒤처지면 라이브 엣지로 하드 seek (누적 표류 제거)
+  const HARD_SEEK_THRESHOLD_MS = 3000;
+  // seek 시 라이브 엣지에서 이만큼 뒤(버퍼 여유)로 이동
+  const SEEK_MARGIN_MS = 1000;
+  // 목표 + 이 값 초과 시 재생속도 살짝 올려 부드럽게 따라잡기
+  const SOFT_CATCHUP_MARGIN_MS = 400;
+  const CATCHUP_RATE = 1.05;   // 따라잡기 속도
+  const NORMAL_RATE = 1.0;
+  // catch-up 판정 주기(ms) — 리포트보다 자주 돌려 반응성 확보
+  const CATCHUP_INTERVAL_MS = 500;
 
   const context = cast.framework.CastReceiverContext.getInstance();
   const playerManager = context.getPlayerManager();
 
   let reportTimer = null;
+  let catchupTimer = null;
   let senderBaseUrl = null; // 폰 IP:PORT (manifest URL에서 추출)
 
   // ---------------------------------------------------------------------------
@@ -72,36 +85,69 @@
   // ---------------------------------------------------------------------------
   // 2) 측정 live latency 계산
   //    latency = (라이브 엣지) - (현재 재생 위치)
-  //    CAF/shaka 버전마다 접근 방법이 달라 여러 소스를 순서대로 시도한다.
+  //    video element / liveEdge / currentTime을 함께 반환해 catch-up에서 재사용.
   // ---------------------------------------------------------------------------
-  function computeLiveLatencyMs() {
-    // (a) 우선: 실제 media element의 seekable 범위 (가장 신뢰도 높음)
-    const el = document.querySelector('cast-media-player') &&
-      (document.querySelector('video') || document.querySelector('audio'));
+  function getMediaEl() {
+    return document.querySelector('video') || document.querySelector('audio') || null;
+  }
+
+  // { latencyMs, video, liveEdge, cur } 반환. 측정 불가 시 latencyMs = -1.
+  function getLiveState() {
+    const el = getMediaEl();
     if (el && el.seekable && el.seekable.length > 0) {
       try {
         const liveEdge = el.seekable.end(el.seekable.length - 1);
         const cur = el.currentTime;
         const latencySec = liveEdge - cur;
         if (isFinite(latencySec) && latencySec >= 0) {
-          return Math.round(latencySec * 1000);
+          return { latencyMs: Math.round(latencySec * 1000), video: el, liveEdge: liveEdge, cur: cur };
         }
       } catch (e) { /* fallthrough */ }
     }
+    return { latencyMs: -1, video: el, liveEdge: NaN, cur: NaN };
+  }
 
-    // (b) 대안: PlayerManager의 라이브 seekable 범위
-    try {
-      const range = playerManager.getLiveSeekableRange && playerManager.getLiveSeekableRange();
-      const cur = playerManager.getCurrentTimeSec && playerManager.getCurrentTimeSec();
-      if (range && typeof range.end === 'number' && typeof cur === 'number') {
-        const latencySec = range.end - cur;
-        if (isFinite(latencySec) && latencySec >= 0) {
-          return Math.round(latencySec * 1000);
+  function computeLiveLatencyMs() {
+    return getLiveState().latencyMs;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 2-1) 라이브 catch-up: latency를 목표 근처로 유지
+  //   - 크게 뒤처지면 라이브 엣지로 하드 seek
+  //   - 조금 뒤처지면 재생속도 1.05x로 부드럽게 따라잡기
+  //   - 목표 근처면 정상 속도(1.0x)
+  // ---------------------------------------------------------------------------
+  function applyLiveCatchup() {
+    const st = getLiveState();
+    if (st.latencyMs < 0 || !st.video) return;
+
+    const video = st.video;
+
+    // (a) 하드 seek: 누적 표류 제거
+    if (st.latencyMs > HARD_SEEK_THRESHOLD_MS) {
+      const target = st.liveEdge - (SEEK_MARGIN_MS / 1000);
+      try {
+        if (isFinite(target) && target > 0) {
+          video.currentTime = target;
+          if (video.playbackRate !== NORMAL_RATE) video.playbackRate = NORMAL_RATE;
+          console.log('[AM-Receiver] catchup: hard seek to live, was ' + st.latencyMs + 'ms');
         }
-      }
-    } catch (e) { /* fallthrough */ }
+      } catch (e) { console.error('[AM-Receiver] seek failed', e); }
+      return;
+    }
 
-    return -1; // 측정 불가
+    // (b) 소프트 catch-up: 재생속도 조정
+    if (st.latencyMs > TARGET_LATENCY_MS + SOFT_CATCHUP_MARGIN_MS) {
+      if (video.playbackRate !== CATCHUP_RATE) {
+        video.playbackRate = CATCHUP_RATE;
+        console.log('[AM-Receiver] catchup: rate ' + CATCHUP_RATE + ', latency ' + st.latencyMs + 'ms');
+      }
+    } else {
+      if (video.playbackRate !== NORMAL_RATE) {
+        video.playbackRate = NORMAL_RATE;
+        console.log('[AM-Receiver] catchup: rate normal, latency ' + st.latencyMs + 'ms');
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -131,6 +177,7 @@
   function startReporting() {
     stopReporting();
     reportTimer = setInterval(sendReport, REPORT_INTERVAL_MS);
+    catchupTimer = setInterval(applyLiveCatchup, CATCHUP_INTERVAL_MS);
     sendReport({ reason: 'start' }); // 즉시 1회
   }
 
@@ -138,6 +185,10 @@
     if (reportTimer) {
       clearInterval(reportTimer);
       reportTimer = null;
+    }
+    if (catchupTimer) {
+      clearInterval(catchupTimer);
+      catchupTimer = null;
     }
   }
 
