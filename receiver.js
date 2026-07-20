@@ -111,88 +111,61 @@
     return document.querySelector('video') || document.querySelector('audio') || null;
   }
 
-  let lastManifestTime = 0;
-  let manifestAvailabilityStartTime = 0;
-
   function getLiveState() {
-    const el = getMediaEl();
-    if (!el) {
-      return { latencyMs: -1, video: null, liveEdge: NaN };
-    }
-
-    // 방법 1: Shaka Player의 getStats() 사용 (가장 정확)
+    // 방법 1: CAF 공식 API (Shadow DOM 무관) — 가장 신뢰 가능
     try {
-      if (window.shaka && window.shaka.Player && el.__shaka_player__) {
-        const player = el.__shaka_player__;
-        const stats = player.getStats();
-
-        if (stats) {
-          // Shaka의 bufferedAhead = receiver의 버퍼 지연
-          let latencyMs = -1;
-
-          if (stats.bufferedAhead !== undefined && stats.bufferedAhead > 0) {
-            latencyMs = Math.round(stats.bufferedAhead * 1000);
-          }
-          // 또는 currentTime 기반 계산
-          else if (stats.currentTime !== undefined && el.duration !== undefined) {
-            const remainingDuration = el.duration - stats.currentTime;
-            if (remainingDuration > 0) {
-              latencyMs = Math.round(remainingDuration * 1000);
-            }
-          }
-
-          if (latencyMs > 0) {
-            console.log('[AM-Receiver] Shaka stats: bufferedAhead=' + stats.bufferedAhead + 's, latency=' + latencyMs + 'ms');
-            return { latencyMs: latencyMs, video: el, liveEdge: NaN };
-          }
+      const range = playerManager.getLiveSeekableRange();
+      const cur = playerManager.getCurrentTimeSec();
+      if (range && typeof range.end === 'number' && typeof cur === 'number') {
+        const latencySec = range.end - cur;
+        if (isFinite(latencySec) && latencySec >= 0) {
+          return { latencyMs: Math.round(latencySec * 1000), liveEdge: range.end, cur: cur };
         }
       }
     } catch (e) {
-      // Shaka API 실패, fallback으로
+      console.error('[AM-Receiver] getLiveSeekableRange error', e);
     }
 
-    // 방법 2: 표준 API (video.seekable)
+    // 방법 2: fallback — DOM video 요소 (CAF는 shadow DOM이라 대부분 실패)
+    const el = getMediaEl();
     if (el && el.seekable && el.seekable.length > 0) {
       try {
         const liveEdge = el.seekable.end(el.seekable.length - 1);
         const cur = el.currentTime;
         const latencySec = liveEdge - cur;
-        if (isFinite(latencySec) && latencySec > 0) {
-          const latencyMs = Math.round(latencySec * 1000);
-          console.log('[AM-Receiver] DOM API: liveEdge=' + liveEdge + 's, cur=' + cur + 's, latency=' + latencyMs + 'ms');
-          return { latencyMs: latencyMs, video: el, liveEdge: liveEdge };
+        if (isFinite(latencySec) && latencySec >= 0) {
+          return { latencyMs: Math.round(latencySec * 1000), liveEdge: liveEdge, cur: cur };
         }
       } catch (e) {}
     }
 
-    // 방법 3: 최후의 수단 - 고정값 사용 (테스트용)
-    // LIVE 스트림은 일반적으로 1~2초 지연
-    const defaultLatency = 1500;
-    console.log('[AM-Receiver] Using default latency: ' + defaultLatency + 'ms');
-    return { latencyMs: defaultLatency, video: el, liveEdge: NaN };
+    return { latencyMs: -1, liveEdge: NaN, cur: NaN };
   }
 
   function applyLiveCatchup() {
     const st = getLiveState();
-    if (st.latencyMs < 0 || !st.video) return;
-    const video = st.video;
+    if (st.latencyMs < 0) return;
 
     if (st.latencyMs > HARD_SEEK_THRESHOLD_MS) {
       const target = st.liveEdge - (SEEK_MARGIN_MS / 1000);
       try {
         if (isFinite(target) && target > 0) {
-          video.currentTime = target;
-          if (video.playbackRate !== NORMAL_RATE) video.playbackRate = NORMAL_RATE;
+          playerManager.seek(target);
           console.log('[AM-Receiver] catchup: hard seek, was ' + st.latencyMs + 'ms');
         }
       } catch (e) {}
       return;
     }
-    if (st.latencyMs > TARGET_LATENCY_MS + SOFT_CATCHUP_MARGIN_MS) {
-      if (video.playbackRate !== CATCHUP_RATE) video.playbackRate = CATCHUP_RATE;
-    } else {
-      if (video.playbackRate !== NORMAL_RATE) video.playbackRate = NORMAL_RATE;
-    }
+
+    // soft catch-up: playbackRate 조정 (지원되는 경우만)
+    try {
+      const rate = (st.latencyMs > TARGET_LATENCY_MS + SOFT_CATCHUP_MARGIN_MS)
+        ? CATCHUP_RATE : NORMAL_RATE;
+      if (typeof playerManager.setPlaybackRate === 'function' &&
+          playerManager.getPlaybackRate() !== rate) {
+        playerManager.setPlaybackRate(rate);
+      }
+    } catch (e) {}
   }
 
   // ---------------------------------------------------------------------------
