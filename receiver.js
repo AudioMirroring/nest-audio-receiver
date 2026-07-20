@@ -202,10 +202,17 @@
     const latencyMs = getLiveState().latencyMs;
 
     if (senderBaseUrl) {
-      // GET 방식 (CORS preflight 없음)
-      const url = senderBaseUrl + '/latency?ms=' + latencyMs +
-        '&r=' + encodeURIComponent(reason || 'tick');
-      fetch(url).catch(function (e) { console.error('[AM-Receiver] GET failed', e); });
+      const url = senderBaseUrl + '/latency';
+      const payload = JSON.stringify({
+        liveLatencyMs: latencyMs,
+        playerState: 'PLAYING',
+        reason: reason || 'tick'
+      });
+      fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload
+      }).catch(function (e) { console.error('[AM-Receiver] POST failed', e); });
     }
     console.log('[AM-Receiver] latency=' + latencyMs + 'ms base=' + senderBaseUrl);
   }
