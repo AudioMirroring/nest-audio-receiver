@@ -12,6 +12,7 @@
   'use strict';
 
   const NAMESPACE = 'urn:x-cast:com.samsung.audiomirroring';
+  const RECEIVER_VER = 'v7'; // index.html의 ?v= 와 함께 올릴 것 (캐시 확인용)
   const TARGET_LATENCY_MS = 1500;
   const REPORT_INTERVAL_MS = 1000;
 
@@ -177,7 +178,7 @@
       const url = senderBaseUrl + '/latency';
       const payload = JSON.stringify({
         liveLatencyMs: latencyMs,
-        playerState: 'PLAYING',
+        ver: RECEIVER_VER,
         reason: reason || 'tick'
       });
       fetch(url, {
