@@ -12,7 +12,7 @@
   'use strict';
 
   const NAMESPACE = 'urn:x-cast:com.samsung.audiomirroring';
-  const RECEIVER_VER = 'v9'; // index.html의 ?v= 와 함께 올릴 것 (캐시 확인용)
+  const RECEIVER_VER = 'v10'; // index.html의 ?v= 와 함께 올릴 것 (캐시 확인용)
   const TARGET_LATENCY_MS = 1500;
   const REPORT_INTERVAL_MS = 1000;
 
@@ -94,7 +94,9 @@
     streaming: {
       lowLatencyMode: true,
       rebufferingGoal: 0.01,
-      bufferingGoal: 2,       // edge 뒤 1.5s에선 큰 버퍼가 물리적으로 불가능 → 작게
+      // 주의: CAF/Chromium 파이프라인이 재생 시작에 ~4.7s 버퍼를 요구함.
+      // bufferingGoal을 그보다 작게 잡으면 Shaka가 fetch를 멈춰 데드락 (v9에서 확인).
+      bufferingGoal: 10,
       inaccurateManifestTolerance: 0,
       updateIntervalSeconds: 0.5,
       stallEnabled: true
