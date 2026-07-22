@@ -12,8 +12,11 @@
   'use strict';
 
   const NAMESPACE = 'urn:x-cast:com.samsung.audiomirroring';
-  const RECEIVER_VER = 'v10'; // index.html의 ?v= 와 함께 올릴 것 (캐시 확인용)
-  const TARGET_LATENCY_MS = 1500;
+  const RECEIVER_VER = 'v11'; // index.html의 ?v= 와 함께 올릴 것 (캐시 확인용)
+  // 이 기기(Pixel Tablet cast_shell)의 파이프라인은 재생 유지에 ~4초 버퍼를
+  // 요구함(v10에서 실측: 3682ms까지 내려가면 스톨). 그 밑을 목표로 잡으면
+  // 스톨→풍선→점프 진동이 나므로 바닥 위에 목표를 둔다.
+  const TARGET_LATENCY_MS = 4500;
   const REPORT_INTERVAL_MS = 1000;
 
   // catch-up 파라미터 (soft only — hard seek 금지)
@@ -191,16 +194,21 @@
   // 목표를 올려 다시는 그 밑으로 파고들지 않는다 → 진동 제거, 바닥 자동 학습
   let effTargetMs = TARGET_LATENCY_MS;
   let prevLatencyMs = -1;
+  let inStall = false; // 스톨 에피소드당 목표 상향은 1회만 (v10에서 연속 상향 폭주 버그)
 
   function applyLiveCatchup() {
     const st = getLiveState();
     if (st.latencyMs < 0) return;
 
     // 스톨 감지: 배속 회수 중인데 latency가 오히려 증가(재생 멈춤) → 바닥에 부딪힘
-    if (prevLatencyMs >= 0 && appliedRate > NORMAL_RATE &&
-        st.latencyMs - prevLatencyMs > 400) {
-      effTargetMs = Math.min(8000, Math.max(effTargetMs, prevLatencyMs + 800));
-      console.log('[AM-Receiver] stall detected, effTarget=' + effTargetMs + 'ms');
+    if (prevLatencyMs >= 0 && st.latencyMs - prevLatencyMs > 400) {
+      if (!inStall && appliedRate > NORMAL_RATE) {
+        effTargetMs = Math.min(8000, Math.max(effTargetMs, prevLatencyMs + 800));
+        console.log('[AM-Receiver] stall detected, effTarget=' + effTargetMs + 'ms');
+      }
+      inStall = true;
+    } else if (prevLatencyMs >= 0 && st.latencyMs - prevLatencyMs < 100) {
+      inStall = false; // latency 증가가 멈춤 → 스톨 종료
     }
     prevLatencyMs = st.latencyMs;
 
