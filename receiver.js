@@ -12,7 +12,7 @@
   'use strict';
 
   const NAMESPACE = 'urn:x-cast:com.samsung.audiomirroring';
-  const RECEIVER_VER = 'v8'; // index.html의 ?v= 와 함께 올릴 것 (캐시 확인용)
+  const RECEIVER_VER = 'v9'; // index.html의 ?v= 와 함께 올릴 것 (캐시 확인용)
   const TARGET_LATENCY_MS = 1500;
   const REPORT_INTERVAL_MS = 1000;
 
@@ -79,19 +79,33 @@
   // 1) 저지연 재생 설정
   // ---------------------------------------------------------------------------
   const playbackConfig = new cast.framework.PlaybackConfig();
-  playbackConfig.autoResumeDuration = 1;
+  playbackConfig.autoResumeDuration = 0.5;  // 이만큼 차면 재생 시작/재개
+  playbackConfig.autoPauseDuration = 0.2;   // 이 밑으로 떨어져야 자동 pause
   playbackConfig.autoResumeNumberOfSegments = 1;
   playbackConfig.initialBandwidth = 128000;
   // 시작 버퍼링 최소화: 기본값으로는 재생 시작 전 ~5초를 버퍼링해서
-  // live edge에 그만큼 뒤처진 채 고정됨 (폰 latency 로그 6000ms의 정체)
-  playbackConfig.shakaConfiguration = {
+  // live edge에 그만큼 뒤처진 채 고정됨 (폰 latency 로그 6000ms의 정체).
+  // CAF 버전에 따라 키 이름이 shakaConfiguration/shakaConfig로 다르므로 둘 다 설정.
+  // Shaka 소스 분석(v4.3.4) 근거:
+  // - 재생 시작/재개 게이트 = max(MPD minBufferTime, rebufferingGoal) 동안 playbackRate=0 강제
+  // - STARVING 진입 = bufferLead < min(0.5, rebufferingGoal/2) → 0.01이면 사실상 게이트 제거
+  // - defaultPresentationDelay: MPD에 suggestedPresentationDelay 없을 때 시작 위치 = edge - 1.5s
+  const shakaCfg = {
     streaming: {
       lowLatencyMode: true,
-      rebufferingGoal: 0.5,   // 이만큼만 차면 재생 시작 (기본 ~2s+)
-      bufferingGoal: 2,       // 앞서 버퍼링할 최대량
-      inaccurateManifestTolerance: 0
+      rebufferingGoal: 0.01,
+      bufferingGoal: 2,       // edge 뒤 1.5s에선 큰 버퍼가 물리적으로 불가능 → 작게
+      inaccurateManifestTolerance: 0,
+      updateIntervalSeconds: 0.5,
+      stallEnabled: true
+    },
+    manifest: {
+      defaultPresentationDelay: 1.5,
+      dash: { ignoreMinBufferTime: true }
     }
   };
+  playbackConfig.shakaConfiguration = shakaCfg;
+  playbackConfig.shakaConfig = shakaCfg;
   playerManager.setPlaybackConfig(playbackConfig);
 
   playerManager.setMessageInterceptor(
@@ -105,6 +119,8 @@
         // 후킹으로도 잡지만, 여기서도 시도
         const src = media.contentUrl || media.contentId;
         captureBaseUrl(src);
+        // 적용 시점 문제 대비: LOAD 직전에 playbackConfig 재적용
+        try { playerManager.setPlaybackConfig(playbackConfig); } catch (e) {}
         console.log('[AM-Receiver] LOAD:', src);
       } catch (e) {
         console.error('[AM-Receiver] LOAD error', e);
@@ -169,11 +185,24 @@
   let appliedRate = NORMAL_RATE;
   let catchupPath = 'none'; // 진단용: el(media element) / pm(playerManager) / none
 
+  // 적응형 목표: catch-up 중 스톨(파이프라인 재버퍼링)이 감지되면 그 지점 위로
+  // 목표를 올려 다시는 그 밑으로 파고들지 않는다 → 진동 제거, 바닥 자동 학습
+  let effTargetMs = TARGET_LATENCY_MS;
+  let prevLatencyMs = -1;
+
   function applyLiveCatchup() {
     const st = getLiveState();
     if (st.latencyMs < 0) return;
 
-    const excess = st.latencyMs - TARGET_LATENCY_MS;
+    // 스톨 감지: 배속 회수 중인데 latency가 오히려 증가(재생 멈춤) → 바닥에 부딪힘
+    if (prevLatencyMs >= 0 && appliedRate > NORMAL_RATE &&
+        st.latencyMs - prevLatencyMs > 400) {
+      effTargetMs = Math.min(8000, Math.max(effTargetMs, prevLatencyMs + 800));
+      console.log('[AM-Receiver] stall detected, effTarget=' + effTargetMs + 'ms');
+    }
+    prevLatencyMs = st.latencyMs;
+
+    const excess = st.latencyMs - effTargetMs;
     let rate = NORMAL_RATE;
     if (excess > 3000) rate = 1.15;               // 많이 밀렸으면 빠르게 회수
     else if (excess > SOFT_CATCHUP_MARGIN_MS) rate = CATCHUP_RATE;
@@ -204,10 +233,22 @@
 
     if (senderBaseUrl) {
       const url = senderBaseUrl + '/latency';
-      // ver에 진단 정보 포함: 버전|catch-up 경로|적용 배속 → 폰 로그로 원격 확인
+      // ver에 진단 정보 포함: 버전|catch-up 경로|배속|적응목표|shaka버전|rebufferingGoal 실측
+      // → 폰 로그만으로 설정 적용 여부까지 원격 확인
+      let shakaVer = 'ns';
+      let rbGoal = '?';
+      try {
+        if (window.shaka && shaka.Player) shakaVer = shaka.Player.version || 'y';
+        const pc = playerManager.getPlaybackConfig && playerManager.getPlaybackConfig();
+        const sc = pc && (pc.shakaConfiguration || pc.shakaConfig);
+        if (sc && sc.streaming && sc.streaming.rebufferingGoal !== undefined) {
+          rbGoal = sc.streaming.rebufferingGoal;
+        }
+      } catch (e) {}
       const payload = JSON.stringify({
         liveLatencyMs: latencyMs,
-        ver: RECEIVER_VER + '|' + catchupPath + '|r' + appliedRate,
+        ver: RECEIVER_VER + '|' + catchupPath + '|r' + appliedRate +
+             '|t' + effTargetMs + '|sk' + shakaVer + '|rb' + rbGoal,
         reason: reason || 'tick'
       });
       fetch(url, {
@@ -239,6 +280,8 @@
   options.customNamespaces = Object.assign({}, options.customNamespaces);
   options.customNamespaces[NAMESPACE] = cast.framework.system.MessageType.JSON;
   options.disableIdleTimeout = true;
+  // 적용 시점 문제 대비: start 옵션으로도 playbackConfig 전달
+  options.playbackConfig = playbackConfig;
 
   context.start(options);
   console.log('[AM-Receiver] started (robust), target =', TARGET_LATENCY_MS);
