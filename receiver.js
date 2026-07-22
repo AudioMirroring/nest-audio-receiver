@@ -12,7 +12,7 @@
   'use strict';
 
   const NAMESPACE = 'urn:x-cast:com.samsung.audiomirroring';
-  const RECEIVER_VER = 'v7'; // index.html의 ?v= 와 함께 올릴 것 (캐시 확인용)
+  const RECEIVER_VER = 'v8'; // index.html의 ?v= 와 함께 올릴 것 (캐시 확인용)
   const TARGET_LATENCY_MS = 1500;
   const REPORT_INTERVAL_MS = 1000;
 
@@ -117,7 +117,18 @@
   // 2) live latency / catch-up
   // ---------------------------------------------------------------------------
   function getMediaEl() {
-    return document.querySelector('video') || document.querySelector('audio') || null;
+    // CAF는 media 요소를 <cast-media-player>의 shadow DOM 안에 만들므로
+    // 일반 querySelector로는 못 찾는다. shadowRoot가 열려 있으면 그 안을 뒤진다.
+    var el = document.querySelector('video') || document.querySelector('audio');
+    if (el) return el;
+    try {
+      var cmp = document.querySelector('cast-media-player');
+      if (cmp && cmp.shadowRoot) {
+        el = cmp.shadowRoot.querySelector('video') || cmp.shadowRoot.querySelector('audio');
+        if (el) return el;
+      }
+    } catch (e) {}
+    return null;
   }
 
   function getLiveState() {
@@ -153,19 +164,36 @@
 
   // soft catch-up 전용. hard seek은 LL-DASH edge 근처에서 버퍼링 루프를
   // 유발해 소리를 끊어먹으므로 사용 금지 (2026-07-22 확인).
+  // 백엔드가 rate shifter를 지원(audio_decoder_android: CreateRateShifter)하므로
+  // shadow DOM 안의 media 요소 playbackRate를 직접 조정한다.
+  let appliedRate = NORMAL_RATE;
+  let catchupPath = 'none'; // 진단용: el(media element) / pm(playerManager) / none
+
   function applyLiveCatchup() {
     const st = getLiveState();
     if (st.latencyMs < 0) return;
 
+    const excess = st.latencyMs - TARGET_LATENCY_MS;
+    let rate = NORMAL_RATE;
+    if (excess > 3000) rate = 1.15;               // 많이 밀렸으면 빠르게 회수
+    else if (excess > SOFT_CATCHUP_MARGIN_MS) rate = CATCHUP_RATE;
+
+    const el = getMediaEl();
     try {
-      const rate = (st.latencyMs > TARGET_LATENCY_MS + SOFT_CATCHUP_MARGIN_MS)
-        ? CATCHUP_RATE : NORMAL_RATE;
-      if (typeof playerManager.setPlaybackRate === 'function' &&
-          playerManager.getPlaybackRate() !== rate) {
-        playerManager.setPlaybackRate(rate);
-        console.log('[AM-Receiver] catchup: rate=' + rate + ', latency=' + st.latencyMs + 'ms');
+      if (el) {
+        catchupPath = 'el';
+        if (el.playbackRate !== rate) el.playbackRate = rate;
+        appliedRate = el.playbackRate;
+      } else if (typeof playerManager.setPlaybackRate === 'function') {
+        catchupPath = 'pm';
+        if (playerManager.getPlaybackRate() !== rate) playerManager.setPlaybackRate(rate);
+        appliedRate = rate;
+      } else {
+        catchupPath = 'none';
       }
-    } catch (e) {}
+    } catch (e) {
+      catchupPath = 'err';
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -176,9 +204,10 @@
 
     if (senderBaseUrl) {
       const url = senderBaseUrl + '/latency';
+      // ver에 진단 정보 포함: 버전|catch-up 경로|적용 배속 → 폰 로그로 원격 확인
       const payload = JSON.stringify({
         liveLatencyMs: latencyMs,
-        ver: RECEIVER_VER,
+        ver: RECEIVER_VER + '|' + catchupPath + '|r' + appliedRate,
         reason: reason || 'tick'
       });
       fetch(url, {
