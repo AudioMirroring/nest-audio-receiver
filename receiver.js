@@ -194,7 +194,9 @@
   // 4) 시작 즉시 타이머 (이벤트 의존 X)
   // ---------------------------------------------------------------------------
   setInterval(function () { sendReport('tick'); }, REPORT_INTERVAL_MS);
-  setInterval(applyLiveCatchup, 500);
+  // catch-up 비활성화: hard seek이 LL-DASH edge 근처에서 버퍼링 루프를 유발해
+  // 소리가 끊김. 폰이 setMusicShareSyncDelay로 보상하므로 receiver는 보고만 한다.
+  // setInterval(applyLiveCatchup, 500);
 
   playerManager.addEventListener(cast.framework.events.EventType.PLAYER_LOAD_COMPLETE,
     () => sendReport('load'));
