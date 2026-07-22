@@ -15,9 +15,7 @@
   const TARGET_LATENCY_MS = 1500;
   const REPORT_INTERVAL_MS = 1000;
 
-  // catch-up 파라미터
-  const HARD_SEEK_THRESHOLD_MS = 3000;
-  const SEEK_MARGIN_MS = 1000;
+  // catch-up 파라미터 (soft only — hard seek 금지)
   const SOFT_CATCHUP_MARGIN_MS = 400;
   const CATCHUP_RATE = 1.05;
   const NORMAL_RATE = 1.0;
@@ -83,6 +81,16 @@
   playbackConfig.autoResumeDuration = 1;
   playbackConfig.autoResumeNumberOfSegments = 1;
   playbackConfig.initialBandwidth = 128000;
+  // 시작 버퍼링 최소화: 기본값으로는 재생 시작 전 ~5초를 버퍼링해서
+  // live edge에 그만큼 뒤처진 채 고정됨 (폰 latency 로그 6000ms의 정체)
+  playbackConfig.shakaConfiguration = {
+    streaming: {
+      lowLatencyMode: true,
+      rebufferingGoal: 0.5,   // 이만큼만 차면 재생 시작 (기본 ~2s+)
+      bufferingGoal: 2,       // 앞서 버퍼링할 최대량
+      inaccurateManifestTolerance: 0
+    }
+  };
   playerManager.setPlaybackConfig(playbackConfig);
 
   playerManager.setMessageInterceptor(
@@ -142,28 +150,19 @@
     return { latencyMs: -1, liveEdge: NaN, cur: NaN };
   }
 
+  // soft catch-up 전용. hard seek은 LL-DASH edge 근처에서 버퍼링 루프를
+  // 유발해 소리를 끊어먹으므로 사용 금지 (2026-07-22 확인).
   function applyLiveCatchup() {
     const st = getLiveState();
     if (st.latencyMs < 0) return;
 
-    if (st.latencyMs > HARD_SEEK_THRESHOLD_MS) {
-      const target = st.liveEdge - (SEEK_MARGIN_MS / 1000);
-      try {
-        if (isFinite(target) && target > 0) {
-          playerManager.seek(target);
-          console.log('[AM-Receiver] catchup: hard seek, was ' + st.latencyMs + 'ms');
-        }
-      } catch (e) {}
-      return;
-    }
-
-    // soft catch-up: playbackRate 조정 (지원되는 경우만)
     try {
       const rate = (st.latencyMs > TARGET_LATENCY_MS + SOFT_CATCHUP_MARGIN_MS)
         ? CATCHUP_RATE : NORMAL_RATE;
       if (typeof playerManager.setPlaybackRate === 'function' &&
           playerManager.getPlaybackRate() !== rate) {
         playerManager.setPlaybackRate(rate);
+        console.log('[AM-Receiver] catchup: rate=' + rate + ', latency=' + st.latencyMs + 'ms');
       }
     } catch (e) {}
   }
@@ -194,9 +193,7 @@
   // 4) 시작 즉시 타이머 (이벤트 의존 X)
   // ---------------------------------------------------------------------------
   setInterval(function () { sendReport('tick'); }, REPORT_INTERVAL_MS);
-  // catch-up 비활성화: hard seek이 LL-DASH edge 근처에서 버퍼링 루프를 유발해
-  // 소리가 끊김. 폰이 setMusicShareSyncDelay로 보상하므로 receiver는 보고만 한다.
-  // setInterval(applyLiveCatchup, 500);
+  setInterval(applyLiveCatchup, 500);
 
   playerManager.addEventListener(cast.framework.events.EventType.PLAYER_LOAD_COMPLETE,
     () => sendReport('load'));
