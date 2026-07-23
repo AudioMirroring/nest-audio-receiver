@@ -12,7 +12,11 @@
   'use strict';
 
   const NAMESPACE = 'urn:x-cast:com.samsung.audiomirroring';
-  const RECEIVER_VER = 'v11'; // index.html의 ?v= 와 함께 올릴 것 (캐시 확인용)
+  const RECEIVER_VER = 'v12'; // index.html의 ?v= 와 함께 올릴 것 (캐시 확인용)
+  // seekable range가 센티널(2^32s = duration 미상)로 나오는 경우가 있음
+  // (인코더 재시작 직후 LOAD 레이스에서 관측). 이 값으로 catch-up이 켜지면
+  // 오디오가 1.15배속으로 계속 재생되므로 반드시 무효 처리한다.
+  const MAX_VALID_LATENCY_MS = 60000;
   // 이 기기(Pixel Tablet cast_shell)의 파이프라인은 재생 유지에 ~4초 버퍼를
   // 요구함(v10에서 실측: 3682ms까지 내려가면 스톨). 그 밑을 목표로 잡으면
   // 스톨→풍선→점프 진동이 나므로 바닥 위에 목표를 둔다.
@@ -159,8 +163,9 @@
       const cur = playerManager.getCurrentTimeSec();
       if (range && typeof range.end === 'number' && typeof cur === 'number') {
         const latencySec = range.end - cur;
-        if (isFinite(latencySec) && latencySec >= 0) {
-          return { latencyMs: Math.round(latencySec * 1000), liveEdge: range.end, cur: cur };
+        const latencyMs = Math.round(latencySec * 1000);
+        if (isFinite(latencySec) && latencySec >= 0 && latencyMs <= MAX_VALID_LATENCY_MS) {
+          return { latencyMs: latencyMs, liveEdge: range.end, cur: cur };
         }
       }
     } catch (e) {
@@ -174,8 +179,9 @@
         const liveEdge = el.seekable.end(el.seekable.length - 1);
         const cur = el.currentTime;
         const latencySec = liveEdge - cur;
-        if (isFinite(latencySec) && latencySec >= 0) {
-          return { latencyMs: Math.round(latencySec * 1000), liveEdge: liveEdge, cur: cur };
+        const latencyMs = Math.round(latencySec * 1000);
+        if (isFinite(latencySec) && latencySec >= 0 && latencyMs <= MAX_VALID_LATENCY_MS) {
+          return { latencyMs: latencyMs, liveEdge: liveEdge, cur: cur };
         }
       } catch (e) {}
     }
@@ -198,7 +204,17 @@
 
   function applyLiveCatchup() {
     const st = getLiveState();
-    if (st.latencyMs < 0) return;
+    if (st.latencyMs < 0) {
+      // latency 무효(측정 실패/센티널) → 배속을 반드시 정상으로 원복.
+      // 원복 없이 return만 하면 1.15배속에 박제됨 (2026-07-22 C300에서 관측)
+      if (appliedRate !== NORMAL_RATE) {
+        try {
+          const el = getMediaEl();
+          if (el) { el.playbackRate = NORMAL_RATE; appliedRate = el.playbackRate; }
+        } catch (e) {}
+      }
+      return;
+    }
 
     // 스톨 감지: 배속 회수 중인데 latency가 오히려 증가(재생 멈춤) → 바닥에 부딪힘
     if (prevLatencyMs >= 0 && st.latencyMs - prevLatencyMs > 400) {
