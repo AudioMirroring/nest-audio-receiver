@@ -12,7 +12,7 @@
   'use strict';
 
   const NAMESPACE = 'urn:x-cast:com.samsung.audiomirroring';
-  const RECEIVER_VER = 'v14'; // index.html의 ?v= 와 함께 올릴 것 (캐시 확인용)
+  const RECEIVER_VER = 'v15'; // index.html의 ?v= 와 함께 올릴 것 (캐시 확인용)
   // seekable range가 센티널(2^32s = duration 미상)로 나오는 경우가 있음
   // (인코더 재시작 직후 LOAD 레이스에서 관측). 이 값으로 catch-up이 켜지면
   // 오디오가 1.15배속으로 계속 재생되므로 반드시 무효 처리한다.
@@ -302,6 +302,23 @@
     }
   }
 
+  // 폰에서 온 명령 처리. seekToEdge: 버퍼의 이전 콘텐츠(곡 변경 전 음원 등)를
+  // 건너뛰고 live edge 근처로 점프 — LOAD 재전송과 달리 세션을 깨뜨리지 않는다.
+  function handleCommand(cmd) {
+    console.log('[AM-Receiver] command:', cmd);
+    if (cmd === 'seekToEdge') {
+      try {
+        const r = playerManager.getLiveSeekableRange();
+        if (r && typeof r.end === 'number' && isFinite(r.end) && r.end > 0.5) {
+          playerManager.seek(r.end - 0.5);
+          console.log('[AM-Receiver] seekToEdge -> ' + (r.end - 0.5));
+        }
+      } catch (e) {
+        console.error('[AM-Receiver] seekToEdge failed', e);
+      }
+    }
+  }
+
   function sendReport(reason) {
     const latencyMs = getLiveState().latencyMs;
 
@@ -336,11 +353,14 @@
              '|t' + effTargetMs + '|sk' + shakaVer + '|rb' + rbGoal,
         reason: reason || 'tick'
       });
+      // 응답은 폰→receiver 명령 채널: {"cmd":"seekToEdge"} 또는 {"cmd":null}
       fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: payload
-      }).catch(function (e) { console.error('[AM-Receiver] POST failed', e); });
+      }).then(function (res) { return res.json(); })
+        .then(function (j) { if (j && j.cmd) handleCommand(j.cmd); })
+        .catch(function (e) { /* 구버전 폰("OK" 응답) 등 무시 */ });
     }
     console.log('[AM-Receiver] latency=' + latencyMs + 'ms base=' + senderBaseUrl);
   }
