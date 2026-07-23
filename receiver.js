@@ -12,7 +12,7 @@
   'use strict';
 
   const NAMESPACE = 'urn:x-cast:com.samsung.audiomirroring';
-  const RECEIVER_VER = 'v13'; // index.html의 ?v= 와 함께 올릴 것 (캐시 확인용)
+  const RECEIVER_VER = 'v14'; // index.html의 ?v= 와 함께 올릴 것 (캐시 확인용)
   // seekable range가 센티널(2^32s = duration 미상)로 나오는 경우가 있음
   // (인코더 재시작 직후 LOAD 레이스에서 관측). 이 값으로 catch-up이 켜지면
   // 오디오가 1.15배속으로 계속 재생되므로 반드시 무효 처리한다.
@@ -265,7 +265,7 @@
   let unhealthyFrozenTicks = 0;   // PLAYING인데 latency가 +1000ms/s로 폭주(재생 정지)한 연속 초
   let healthPrevLatency = -1;
 
-  function checkSelfHeal(latencyMs) {
+  function checkSelfHeal(latencyMs, curSec) {
     let playing = false;
     try {
       playing = playerManager.getPlayerState() === cast.framework.messages.PlayerState.PLAYING;
@@ -280,7 +280,10 @@
     }
 
     if (latencyMs < 0) {
-      unhealthyInvalidTicks++;
+      // latency 무효라도 cur가 살아있으면 폰이 직접 계산 가능 → 죽을 필요 없음.
+      // 둘 다 죽었을 때(측정 완전 불능)만 카운트.
+      if (curSec < 0) unhealthyInvalidTicks++;
+      else unhealthyInvalidTicks = 0;
       unhealthyFrozenTicks = 0;
     } else {
       unhealthyInvalidTicks = 0;
@@ -301,7 +304,16 @@
 
   function sendReport(reason) {
     const latencyMs = getLiveState().latencyMs;
-    checkSelfHeal(latencyMs);
+
+    // 재생 위치(초): Shaka seekable range가 깨진 좀비 상태에서도 살아있는 단순 API.
+    // 폰이 (인코더 PTS - cur)로 latency를 직접 계산하는 대체 경로의 입력.
+    let curSec = -1;
+    try {
+      const c = playerManager.getCurrentTimeSec();
+      if (typeof c === 'number' && isFinite(c) && c >= 0) curSec = c;
+    } catch (e) {}
+
+    checkSelfHeal(latencyMs, curSec);
 
     if (senderBaseUrl) {
       const url = senderBaseUrl + '/latency';
@@ -319,6 +331,7 @@
       } catch (e) {}
       const payload = JSON.stringify({
         liveLatencyMs: latencyMs,
+        cur: curSec,
         ver: RECEIVER_VER + '|' + catchupPath + '|r' + appliedRate +
              '|t' + effTargetMs + '|sk' + shakaVer + '|rb' + rbGoal,
         reason: reason || 'tick'
