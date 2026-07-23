@@ -12,7 +12,7 @@
   'use strict';
 
   const NAMESPACE = 'urn:x-cast:com.samsung.audiomirroring';
-  const RECEIVER_VER = 'v15'; // index.html의 ?v= 와 함께 올릴 것 (캐시 확인용)
+  const RECEIVER_VER = 'v16'; // index.html의 ?v= 와 함께 올릴 것 (캐시 확인용)
   // seekable range가 센티널(2^32s = duration 미상)로 나오는 경우가 있음
   // (인코더 재시작 직후 LOAD 레이스에서 관측). 이 값으로 catch-up이 켜지면
   // 오디오가 1.15배속으로 계속 재생되므로 반드시 무효 처리한다.
@@ -110,7 +110,13 @@
     },
     manifest: {
       defaultPresentationDelay: 1.5,
-      dash: { ignoreMinBufferTime: true }
+      dash: {
+        ignoreMinBufferTime: true,
+        // lowLatencyMode가 기본으로 꺼버리는 드리프트 자동보정을 다시 켠다.
+        // 꺼져 있으면 Shaka edge가 (부정확한) 시계만 믿어서 실제 발행 콘텐츠와
+        // 수 초 어긋남 → 잉여 latency + seekToEdge 미달(이전 곡 잔류)의 원인
+        autoCorrectDrift: true
+      }
     }
   };
   playbackConfig.shakaConfiguration = shakaCfg;
