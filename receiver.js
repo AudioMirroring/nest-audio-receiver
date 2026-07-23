@@ -12,7 +12,7 @@
   'use strict';
 
   const NAMESPACE = 'urn:x-cast:com.samsung.audiomirroring';
-  const RECEIVER_VER = 'v12'; // index.html의 ?v= 와 함께 올릴 것 (캐시 확인용)
+  const RECEIVER_VER = 'v13'; // index.html의 ?v= 와 함께 올릴 것 (캐시 확인용)
   // seekable range가 센티널(2^32s = duration 미상)로 나오는 경우가 있음
   // (인코더 재시작 직후 LOAD 레이스에서 관측). 이 값으로 catch-up이 켜지면
   // 오디오가 1.15배속으로 계속 재생되므로 반드시 무효 처리한다.
@@ -130,6 +130,7 @@
         captureBaseUrl(src);
         // 적용 시점 문제 대비: LOAD 직전에 playbackConfig 재적용
         try { playerManager.setPlaybackConfig(playbackConfig); } catch (e) {}
+        everLoaded = true;
         console.log('[AM-Receiver] LOAD:', src);
       } catch (e) {
         console.error('[AM-Receiver] LOAD error', e);
@@ -254,8 +255,53 @@
   // ---------------------------------------------------------------------------
   // 3) 리포트 (GET, 하트비트 포함)
   // ---------------------------------------------------------------------------
+  // ── 자가 회복 ──────────────────────────────────────────────────────────
+  // 재연결 레이스 등으로 페이지가 "재생은 되는데 측정 불능" 좀비 상태가 되면
+  // 폰의 재-LOAD로는 복구 불가(같은 깨진 페이지 재사용). 유일한 해법은
+  // receiver가 스스로 종료(context.stop())해서 다음 연결이 새 페이지로 뜨게 하는 것.
+  // latency는 비디오 렌더링 제어의 입력이므로 측정 불능 = 기능 불능이다.
+  let everLoaded = false;
+  let unhealthyInvalidTicks = 0;  // PLAYING인데 측정 불능(-1)이 연속된 초
+  let unhealthyFrozenTicks = 0;   // PLAYING인데 latency가 +1000ms/s로 폭주(재생 정지)한 연속 초
+  let healthPrevLatency = -1;
+
+  function checkSelfHeal(latencyMs) {
+    let playing = false;
+    try {
+      playing = playerManager.getPlayerState() === cast.framework.messages.PlayerState.PLAYING;
+    } catch (e) {}
+
+    if (!everLoaded || !playing) {
+      // pause/buffering/미로드 상태는 판정 제외 (pause 중 latency 증가는 정상 현상)
+      unhealthyInvalidTicks = 0;
+      unhealthyFrozenTicks = 0;
+      healthPrevLatency = -1;
+      return;
+    }
+
+    if (latencyMs < 0) {
+      unhealthyInvalidTicks++;
+      unhealthyFrozenTicks = 0;
+    } else {
+      unhealthyInvalidTicks = 0;
+      if (healthPrevLatency >= 0 && latencyMs - healthPrevLatency > 800) {
+        unhealthyFrozenTicks++;
+      } else {
+        unhealthyFrozenTicks = 0;
+      }
+    }
+    healthPrevLatency = latencyMs;
+
+    if (unhealthyInvalidTicks >= 12 || unhealthyFrozenTicks >= 12) {
+      console.error('[AM-Receiver] unhealthy (invalid=' + unhealthyInvalidTicks +
+        ', frozen=' + unhealthyFrozenTicks + ') — self-stopping for fresh relaunch');
+      try { context.stop(); } catch (e) {}
+    }
+  }
+
   function sendReport(reason) {
     const latencyMs = getLiveState().latencyMs;
+    checkSelfHeal(latencyMs);
 
     if (senderBaseUrl) {
       const url = senderBaseUrl + '/latency';
